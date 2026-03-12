@@ -36,6 +36,8 @@ Import your current Codex login state:
 codexl import current ~
 ```
 
+`import` copies the official login state into `~/.codexl/homes/<name>` instead of referencing the source HOME directly.
+
 Check latest usage:
 
 ```bash

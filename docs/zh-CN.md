@@ -36,6 +36,8 @@ codexl --help
 codexl import current ~
 ```
 
+`import` 会把官方登录态复制到 `~/.codexl/homes/<name>`，而不是直接引用原始 HOME。
+
 查看最新额度：
 
 ```bash

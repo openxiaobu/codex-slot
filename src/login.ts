@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { registerManagedAccount } from "./account-store";
+import fs from "node:fs";
+import { hasCompleteCodexAuthState, registerManagedAccount } from "./account-store";
 import { getManagedHome } from "./config";
 
 /**
@@ -11,7 +12,7 @@ import { getManagedHome } from "./config";
  */
 export async function loginManagedAccount(accountId: string): Promise<string> {
   const managedHome = getManagedHome(accountId);
-  registerManagedAccount(accountId, managedHome);
+  fs.mkdirSync(managedHome, { recursive: true });
 
   return await new Promise<string>((resolve, reject) => {
     const child = spawn("codex", ["login"], {
@@ -24,6 +25,11 @@ export async function loginManagedAccount(accountId: string): Promise<string> {
 
     child.on("exit", (code) => {
       if (code === 0) {
+        if (!hasCompleteCodexAuthState(managedHome)) {
+          reject(new Error("codex login 已退出，但未检测到完整登录态，请重新登录"));
+          return;
+        }
+
         registerManagedAccount(accountId, managedHome);
         resolve(managedHome);
         return;

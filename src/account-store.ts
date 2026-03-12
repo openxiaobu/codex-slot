@@ -57,6 +57,79 @@ export function readAuthFile(codexHome: string): CodexAuthFile | null {
 }
 
 /**
+ * 将来源 HOME 下的官方 `.codex` 登录态复制到目标 HOME。
+ *
+ * 只复制认证和账号元数据所需文件，不复制历史日志、缓存等无关内容。
+ *
+ * @param sourceHome 来源 HOME 目录。
+ * @param targetHome 目标 HOME 目录。
+ * @returns 无返回值。
+ * @throws 当来源目录缺少关键认证文件时抛出错误。
+ */
+export function cloneCodexAuthState(sourceHome: string, targetHome: string): void {
+  const sourceCodexDir = getCodexDataDir(sourceHome);
+  const targetCodexDir = getCodexDataDir(targetHome);
+  const sourceAuthPath = path.join(sourceCodexDir, "auth.json");
+  const sourceAccountsDir = path.join(sourceCodexDir, "accounts");
+  const sourceRegistryPath = path.join(sourceAccountsDir, "registry.json");
+
+  if (!fs.existsSync(sourceAuthPath)) {
+    throw new Error(`来源目录缺少 auth.json: ${sourceAuthPath}`);
+  }
+
+  if (!fs.existsSync(sourceRegistryPath)) {
+    throw new Error(`来源目录缺少 registry.json: ${sourceRegistryPath}`);
+  }
+
+  fs.mkdirSync(targetCodexDir, { recursive: true });
+  fs.mkdirSync(path.join(targetCodexDir, "accounts"), { recursive: true });
+
+  fs.copyFileSync(sourceAuthPath, path.join(targetCodexDir, "auth.json"));
+  fs.copyFileSync(sourceRegistryPath, path.join(targetCodexDir, "accounts", "registry.json"));
+
+  for (const entry of fs.readdirSync(sourceAccountsDir, { withFileTypes: true })) {
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    if (!entry.name.endsWith(".auth.json")) {
+      continue;
+    }
+
+    fs.copyFileSync(
+      path.join(sourceAccountsDir, entry.name),
+      path.join(targetCodexDir, "accounts", entry.name)
+    );
+  }
+}
+
+/**
+ * 检查某个 HOME 下的官方登录态是否完整。
+ *
+ * 完整标准：
+ * 1. 存在 `.codex/auth.json`
+ * 2. 存在 `.codex/accounts/registry.json`
+ * 3. 至少存在一个账户级 `*.auth.json`
+ *
+ * @param codexHome 待检查的 HOME 目录。
+ * @returns 为 `true` 表示登录态完整，可用于调度；否则为 `false`。
+ */
+export function hasCompleteCodexAuthState(codexHome: string): boolean {
+  const codexDir = getCodexDataDir(codexHome);
+  const authPath = path.join(codexDir, "auth.json");
+  const accountsDir = path.join(codexDir, "accounts");
+  const registryPath = path.join(accountsDir, "registry.json");
+
+  if (!fs.existsSync(authPath) || !fs.existsSync(registryPath) || !fs.existsSync(accountsDir)) {
+    return false;
+  }
+
+  return fs
+    .readdirSync(accountsDir, { withFileTypes: true })
+    .some((entry) => entry.isFile() && entry.name.endsWith(".auth.json"));
+}
+
+/**
  * 将最新认证信息回写到指定账号的 `auth.json`。
  *
  * @param codexHome 账号独立 HOME 目录。

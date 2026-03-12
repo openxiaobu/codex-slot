@@ -3,10 +3,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
-import { registerManagedAccount, removeManagedAccount } from "./account-store";
+import {
+  cloneCodexAuthState,
+  registerManagedAccount,
+  removeManagedAccount
+} from "./account-store";
 import {
   expandHome,
   getCodexSwHome,
+  getManagedHome,
   getPidPath,
   getServiceLogPath,
   loadConfig,
@@ -37,17 +42,22 @@ async function handleStatus(): Promise<void> {
 }
 
 /**
- * 将已有的 Codex HOME 目录纳入 codexl 管理。
+ * 将已有的 Codex HOME 目录中的登录态复制到 codexl 自己的隔离目录并纳入管理。
  *
  * @param accountId 本地账号标识。
  * @param codexHome 现有 HOME 目录；若未传则默认使用当前用户 HOME。
  * @returns 无返回值。
  */
 function handleAccountImport(accountId: string, codexHome?: string): void {
-  const home = codexHome ? expandHome(codexHome) : process.env.HOME ?? "";
-  const account = registerManagedAccount(accountId, home);
+  const sourceHome = codexHome ? expandHome(codexHome) : process.env.HOME ?? "";
+  const managedHome = getManagedHome(accountId);
+
+  cloneCodexAuthState(sourceHome, managedHome);
+
+  const account = registerManagedAccount(accountId, managedHome);
   console.log(`账号已导入: ${account.id}`);
-  console.log(`来源 HOME: ${account.codex_home}`);
+  console.log(`来源 HOME: ${sourceHome}`);
+  console.log(`已复制到: ${account.codex_home}`);
 }
 
 /**

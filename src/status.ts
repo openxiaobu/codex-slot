@@ -1,8 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import { loadConfig } from "./config";
 import {
-  getCodexDataDir,
+  hasCompleteCodexAuthState,
   resolvePrimaryRegistryAccount
 } from "./account-store";
 import { getAccountBlock, getUsageCache } from "./state";
@@ -51,9 +49,7 @@ export function collectAccountStatuses(): AccountRuntimeStatus[] {
   const config = loadConfig();
 
   return config.accounts.map((account) => {
-    const codexDir = getCodexDataDir(account.codex_home);
-    const registryPath = path.join(codexDir, "accounts", "registry.json");
-    const exists = fs.existsSync(registryPath);
+    const exists = hasCompleteCodexAuthState(account.codex_home);
     const primary = exists ? resolvePrimaryRegistryAccount(account.codex_home) : null;
     const usageCache = getUsageCache(account.id);
     const activeEmail = usageCache?.email ?? primary?.email ?? account.email;
@@ -89,7 +85,7 @@ export function collectAccountStatuses(): AccountRuntimeStatus[] {
         !isFiveHourLimited &&
         !isWeeklyLimited &&
         !localBlocked,
-      sourcePath: codexDir
+      sourcePath: account.codex_home
     };
   });
 }
