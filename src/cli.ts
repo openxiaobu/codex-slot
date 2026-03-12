@@ -36,11 +36,13 @@ async function handleStatus(): Promise<void> {
   console.log(renderStatusTable(statuses));
 
   const available = statuses.filter((item) => item.isAvailable).length;
-  const cooldown = statuses.filter((item) => item.isFiveHourLimited && !item.isWeeklyLimited).length;
+  const fiveHourLimited = statuses.filter(
+    (item) => item.isFiveHourLimited && !item.isWeeklyLimited
+  ).length;
   const weeklyLimited = statuses.filter((item) => item.isWeeklyLimited).length;
 
   console.log("");
-  console.log(`available=${available} cooldown=${cooldown} weekly_limited=${weeklyLimited}`);
+  console.log(`available=${available} 5h_limited=${fiveHourLimited} weekly_limited=${weeklyLimited}`);
 }
 
 /**

@@ -10,7 +10,7 @@
 - Manage multiple accounts or workspaces as separate slots
 - Fetch the latest usage from the official usage endpoint
 - Expose a local provider endpoint for Codex
-- Apply local cooldown rules for temporary, 5-hour, and weekly limits
+- Apply local block rules for temporary, 5-hour, and weekly limits
 - Automatically switch `~/.codex/config.toml` to the `codexl` provider while the local proxy is running
 
 ## Installation

@@ -112,7 +112,7 @@ export function renderStatusTable(statuses: AccountRuntimeStatus[]): string {
       } else if (item.isWeeklyLimited) {
         status = "weekly_limited";
       } else if (item.isFiveHourLimited) {
-        status = "cooldown";
+        status = "5h_limited";
       } else if (item.isAvailable) {
         status = "available";
       } else {
