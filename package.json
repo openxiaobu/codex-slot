@@ -1,6 +1,6 @@
 {
   "name": "@openxiaobu/codexl",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "本地 Codex 多账号切换与状态管理工具",
   "type": "commonjs",
   "main": "dist/cli.js",
