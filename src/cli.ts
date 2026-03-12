@@ -103,9 +103,7 @@ async function handleInteractiveToggle(): Promise<void> {
   let changed = false;
 
   const render = () => {
-    // 清屏并将光标移动到左上角。
-    process.stdout.write("\x1b[2J\x1b[0f");
-    console.log("空格切换选中账号启用状态，回车确认，q 退出。\n");
+    console.log("\n空格切换选中账号启用状态，回车确认，q 退出：\n");
 
     for (let i = 0; i < accounts.length; i += 1) {
       const account = accounts[i];
