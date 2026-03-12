@@ -56,18 +56,41 @@ interface StatusCommandOptions {
 }
 
 /**
- * 统计一段终端输出文本实际占用的逻辑行数。
+ * 进入交互式全屏缓冲区，并隐藏光标，确保后续重绘始终基于固定画布。
  *
- * @param lines 待输出的文本行数组；数组元素中的换行符会继续拆分计数。
- * @returns number，完整输出块占用的总行数；空数组时返回 `0`。
+ * @returns void，无返回值。
  * @throws 无显式抛出。
  */
-function countRenderedLines(lines: string[]): number {
-  if (lines.length === 0) {
-    return 0;
-  }
+function enterInteractiveScreen(): void {
+  // 切到 alternate screen，避免在主终端历史中反复覆盖导致画面抖动。
+  process.stdout.write("\x1b[?1049h");
+  process.stdout.write("\x1b[?25l");
+}
 
-  return lines.reduce((total, line) => total + line.split("\n").length, 0);
+/**
+ * 退出交互式全屏缓冲区，并恢复光标显示。
+ *
+ * @returns void，无返回值。
+ * @throws 无显式抛出。
+ */
+function leaveInteractiveScreen(): void {
+  process.stdout.write("\x1b[?25h");
+  process.stdout.write("\x1b[?1049l");
+}
+
+/**
+ * 在交互式全屏缓冲区中从左上角整块重绘内容。
+ *
+ * @param lines 待输出的文本行数组。
+ * @returns void，无返回值。
+ * @throws 无显式抛出。
+ */
+function renderInteractiveScreen(lines: string[]): void {
+  // 每次都回到左上角并清屏，避免依赖“上一帧占了多少行”的脆弱回退逻辑。
+  readline.cursorTo(process.stdout, 0, 0);
+  readline.clearScreenDown(process.stdout);
+  process.stdout.write(lines.join("\n"));
+  process.stdout.write("\n");
 }
 
 /**
@@ -173,7 +196,8 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
   const accounts = [...config.accounts].sort((a, b) => a.name.localeCompare(b.name));
   let cursor = resolveInitialCursorIndex(accounts, initialStatuses ?? collectAccountStatuses());
   let changed = false;
-  let renderedLines = 0;
+
+  enterInteractiveScreen();
 
   return await new Promise<void>((resolve) => {
     let closed = false;
@@ -217,24 +241,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         "",
         "空格切换当前行启用状态，Enter / q 退出。"
       ];
-      // 这里记录的是“重绘完成后，光标回到渲染块起始位置所需上移的行数”。
-      // 由于下方统一只额外输出了一个 `\n`，光标会停在渲染块下一行的行首，
-      // 因此只需要按实际渲染行数回退；不能额外再加 1，否则会吞掉上方一行内容。
-      const nextRenderedLines = countRenderedLines(lines);
-
-      // 首次渲染时先换一行，避免粘在上一行输出后面。
-      if (renderedLines === 0) {
-        process.stdout.write("\n");
-      } else {
-        // 将光标移动到上一轮渲染块的起始行，保证整块内容原地刷新。
-        process.stdout.write(`\x1b[${renderedLines}A`);
-      }
-
-      // 先清理旧渲染块，再按新的真实占行数记录，避免表格多行时回退不足。
-      process.stdout.write("\x1b[J");
-      process.stdout.write(lines.join("\n"));
-      process.stdout.write("\n");
-      renderedLines = nextRenderedLines;
+      renderInteractiveScreen(lines);
     };
 
     const applyChanges = () => {
@@ -266,12 +273,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
       stdin.off("keypress", onKeypress);
       stdin.setRawMode?.(false);
       stdin.pause();
-
-      // 将光标移回交互块顶部并清空，确保命令行提示符直接回到正常位置。
-      if (renderedLines > 0) {
-        process.stdout.write(`\x1b[${renderedLines}A`);
-        process.stdout.write("\x1b[J");
-      }
+      leaveInteractiveScreen();
 
       console.log("已退出账号启用状态编辑。");
       resolve();
