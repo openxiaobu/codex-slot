@@ -1,28 +1,19 @@
 # codexl
 
-Local multi-account / multi-workspace switcher for Codex.
+`codexl` is a local multi-account / multi-workspace switcher for Codex.
 
-`codexl` 是一个本地 `Codex` 多账号 / 多工作空间切换器。
+[中文文档](./docs/zh-CN.md)
 
-## Overview
-
-English:
+## Features
 
 - Reuse the official `~/.codex` login state
 - Manage multiple accounts or workspaces as separate slots
 - Fetch the latest usage from the official usage endpoint
 - Expose a local provider endpoint for Codex
 - Apply local cooldown rules for temporary, 5-hour, and weekly limits
+- Write a managed provider block into `~/.codex/config.toml`
 
-中文：
-
-- 复用官方 `~/.codex` 登录态
-- 将多个账号或工作空间作为独立槽位管理
-- 直接调用官方 usage 接口获取最新额度
-- 暴露本地 provider 给 `Codex` 使用
-- 对临时限流、5 小时限制、周限制做本地熔断
-
-## Install
+## Installation
 
 ```bash
 npm i -g @openxiaobu/codexl
@@ -34,39 +25,37 @@ Verify:
 codexl --help
 ```
 
+This repository is the source repository.
+GitHub installation from the repository URL is not supported.
+
 ## Quick Start
 
-1. Import your current Codex login state
+Import your current Codex login state:
 
 ```bash
 codexl import current ~
 ```
 
-2. Check latest usage
+Check latest usage:
 
 ```bash
 codexl status
 ```
 
-3. Start the local proxy
+Start the local proxy:
 
 ```bash
 codexl start
-```
-
-Custom port:
-
-```bash
 codexl start --port 4399
 ```
 
-4. Show current local endpoint and key
+Show the current local endpoint and key:
 
 ```bash
 codexl get
 ```
 
-5. Write provider config into `~/.codex/config.toml`
+Write provider config into `~/.codex/config.toml`:
 
 ```bash
 codexl config
@@ -85,23 +74,16 @@ codexl get
 codexl config [codexPath]
 ```
 
-More details: [HELP.md](./HELP.md)
-
 ## How `status` Works
 
-English:
+`codexl status` does not render stale data from the official `registry.json` cache.
 
-1. Read `access_token` / `refresh_token` / `account_id` from the official Codex login state
-2. Request `https://chatgpt.com/backend-api/wham/usage`
-3. Store the latest result in `~/.codexl/state.json`
-4. Render the latest local cache
+Instead it:
 
-中文：
-
-1. 从官方登录态中读取 `access_token` / `refresh_token` / `account_id`
-2. 请求 `https://chatgpt.com/backend-api/wham/usage`
-3. 将最新结果写入 `~/.codexl/state.json`
-4. 最后读取本地最新缓存进行展示
+1. Reads `access_token`, `refresh_token`, and `account_id` from the official Codex login state
+2. Requests `https://chatgpt.com/backend-api/wham/usage`
+3. Stores the latest result in `~/.codexl/state.json`
+4. Renders the latest local cache
 
 ## Generated Codex Config
 
@@ -117,7 +99,7 @@ wire_api = "responses"
 # <<< codexl managed end <<<
 ```
 
-Rules:
+Behavior:
 
 - If `[model_providers.codexl]` already exists, it is replaced
 - If global `model_provider` exists, it is changed to `codexl`
@@ -134,21 +116,13 @@ Rules:
 - `~/.codexl/codexl.pid`
 - `~/.codexl/logs/service.log`
 
-If you previously used `~/.codexsw`, it will be migrated automatically.
+If you previously used `~/.codexsw`, it is migrated automatically.
 
 ## Limit Handling
 
-English:
-
-- Weekly limit: blocked until weekly reset time
-- 5-hour limit: blocked until 5-hour reset time
+- Weekly limit: blocked until the weekly reset time
+- 5-hour limit: blocked until the 5-hour reset time
 - Temporary limit: blocked for 5 minutes
-
-中文：
-
-- 周限制：禁用到周窗口重置时间
-- 5 小时限制：禁用到 5 小时窗口重置时间
-- 临时限流：先禁用 5 分钟
 
 ## Repository
 

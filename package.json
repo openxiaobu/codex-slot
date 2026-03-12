@@ -13,6 +13,7 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "tsc -p tsconfig.json && chmod +x dist/cli.js dist/serve.js",
+    "prepublishOnly": "npm run build",
     "dev": "tsx src/cli.ts",
     "check": "tsc --noEmit -p tsconfig.json"
   },
