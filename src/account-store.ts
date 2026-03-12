@@ -57,6 +57,30 @@ export function readAuthFile(codexHome: string): CodexAuthFile | null {
 }
 
 /**
+ * 从 `id_token` 中解析邮箱。
+ *
+ * @param auth 认证文件对象。
+ * @returns 邮箱地址；缺失或解析失败时返回 `undefined`。
+ */
+function resolveEmailFromAuth(auth: CodexAuthFile | null): string | undefined {
+  const idToken = auth?.tokens?.id_token;
+
+  if (!idToken) {
+    return undefined;
+  }
+
+  try {
+    const payload = JSON.parse(
+      Buffer.from(idToken.split(".")[1] ?? "", "base64url").toString("utf8")
+    ) as { email?: string };
+
+    return payload.email;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 将来源 HOME 下的官方 `.codex` 登录态复制到目标 HOME。
  *
  * 只复制认证和账号元数据所需文件，不复制历史日志、缓存等无关内容。
@@ -108,25 +132,21 @@ export function cloneCodexAuthState(sourceHome: string, targetHome: string): voi
  *
  * 完整标准：
  * 1. 存在 `.codex/auth.json`
- * 2. 存在 `.codex/accounts/registry.json`
- * 3. 至少存在一个账户级 `*.auth.json`
+ * 2. `auth.json` 中存在 `access_token`
+ * 3. `auth.json` 中存在 `refresh_token`
+ * 4. `auth.json` 中存在 `account_id`
  *
  * @param codexHome 待检查的 HOME 目录。
  * @returns 为 `true` 表示登录态完整，可用于调度；否则为 `false`。
  */
 export function hasCompleteCodexAuthState(codexHome: string): boolean {
-  const codexDir = getCodexDataDir(codexHome);
-  const authPath = path.join(codexDir, "auth.json");
-  const accountsDir = path.join(codexDir, "accounts");
-  const registryPath = path.join(accountsDir, "registry.json");
+  const auth = readAuthFile(codexHome);
 
-  if (!fs.existsSync(authPath) || !fs.existsSync(registryPath) || !fs.existsSync(accountsDir)) {
-    return false;
-  }
-
-  return fs
-    .readdirSync(accountsDir, { withFileTypes: true })
-    .some((entry) => entry.isFile() && entry.name.endsWith(".auth.json"));
+  return Boolean(
+    auth?.tokens?.access_token &&
+      auth?.tokens?.refresh_token &&
+      auth?.tokens?.account_id
+  );
 }
 
 /**
@@ -179,11 +199,12 @@ export function registerManagedAccount(accountId: string, codexHome?: string): M
   fs.mkdirSync(home, { recursive: true });
 
   const primary = resolvePrimaryRegistryAccount(home);
+  const auth = readAuthFile(home);
   const account: ManagedAccount = {
     id: accountId,
     name: accountId,
     codex_home: home,
-    email: primary?.email,
+    email: primary?.email ?? resolveEmailFromAuth(auth),
     enabled: true,
     imported_at: new Date().toISOString()
   };
