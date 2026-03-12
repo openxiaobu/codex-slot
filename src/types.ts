@@ -110,6 +110,7 @@ export interface UsageRefreshResult {
   fiveHourResetAt: number | null;
   weeklyUsedPercent: number | null;
   weeklyResetAt: number | null;
+  refreshedAt: string;
 }
 
 export interface AccountBlockState {

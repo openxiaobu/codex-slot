@@ -41,6 +41,55 @@ function formatReset(unixSeconds: number | null): string {
 }
 
 /**
+ * 将剩余秒数格式化为紧凑的人类可读文本，便于在状态列中展示熔断剩余时间。
+ *
+ * @param unixSeconds 熔断截止时间，Unix 秒时间戳。
+ * @returns 格式化后的剩余时长；当时间为空或已过期时返回 `null`。
+ */
+function formatRemainingDuration(unixSeconds: number | null): string | null {
+  if (!unixSeconds) {
+    return null;
+  }
+
+  const diffSeconds = unixSeconds - Math.floor(Date.now() / 1000);
+  if (diffSeconds <= 0) {
+    return null;
+  }
+
+  const hours = Math.floor(diffSeconds / 3600);
+  const minutes = Math.floor((diffSeconds % 3600) / 60);
+  const seconds = diffSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h${minutes}m`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m${seconds}s`;
+  }
+
+  return `${seconds}s`;
+}
+
+/**
+ * 将本地熔断原因与剩余时间格式化为更直观的状态文本。
+ *
+ * @param reason 熔断原因。
+ * @param until 熔断截止时间，Unix 秒时间戳。
+ * @returns 适合在终端表格中展示的状态文本。
+ */
+function formatBlockedStatus(reason: string | undefined, until: number | null | undefined): string {
+  const label = reason ?? "blocked";
+  const remaining = formatRemainingDuration(until ?? null);
+
+  if (!remaining) {
+    return label;
+  }
+
+  return `${label}(${remaining})`;
+}
+
+/**
  * 汇总所有受管账号的运行状态，供状态展示与调度复用。
  *
  * @returns 所有账号的运行时状态列表。
@@ -108,7 +157,7 @@ export function renderStatusTable(statuses: AccountRuntimeStatus[]): string {
       if (!item.enabled) {
         status = "disabled";
       } else if (item.localBlockUntil && item.localBlockUntil * 1000 > Date.now()) {
-        status = item.localBlockReason ?? "blocked";
+        status = formatBlockedStatus(item.localBlockReason, item.localBlockUntil);
       } else if (item.isWeeklyLimited) {
         status = "weekly_limited";
       } else if (item.isFiveHourLimited) {

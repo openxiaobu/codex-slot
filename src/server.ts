@@ -67,6 +67,19 @@ function resolveBlockWindow(
 }
 
 /**
+ * 为当前请求失败的账号设置临时熔断状态，避免短时间内被重复选中。
+ *
+ * @param accountId 账号标识。
+ * @param reason 本地状态中记录的失败原因。
+ * @param blockSeconds 熔断持续秒数。
+ * @returns 无返回值。
+ */
+function markAccountFailure(accountId: string, reason: string, blockSeconds: number): void {
+  // 请求链路中的短期失败通常是瞬时异常，记录一个较短的本地熔断窗口即可。
+  setAccountBlock(accountId, Math.floor(Date.now() / 1000) + blockSeconds, reason);
+}
+
+/**
  * 启动一个极轻量本地服务，供后续接入代理或脚本化查询使用。
  *
  * 当前阶段服务用途：
@@ -133,17 +146,13 @@ export async function startServer(port: number): Promise<void> {
     let lastStatusCode = 503;
 
     for (const picked of candidates) {
-      try {
-        await refreshAccountUsage(picked.account.id);
-      } catch {
-        // 刷新失败时继续使用本地缓存，不中断请求链路。
-      }
-
       const auth = readAuthFile(picked.account.codex_home);
       let accessToken = auth?.tokens?.access_token;
       const accountIdHeader = auth?.tokens?.account_id;
 
       if (!accessToken) {
+        // 当前账号认证信息不完整时，先做短时熔断，再切到下一个账号。
+        markAccountFailure(picked.account.id, "invalid_account_auth", 10 * 60);
         lastErrorPayload = {
           error: {
             message: `账号 ${picked.account.id} 缺少 access_token`,
@@ -167,12 +176,40 @@ export async function startServer(port: number): Promise<void> {
           body: JSON.stringify(requestMessage)
         });
 
-      let upstream = await sendUpstream();
+      let upstream;
+
+      try {
+        upstream = await sendUpstream();
+      } catch (error) {
+        // 上游连接异常通常是账号或链路瞬时问题，短时标记后继续尝试下一个账号。
+        markAccountFailure(picked.account.id, "request_failed", 60);
+        lastStatusCode = 503;
+        lastErrorPayload = {
+          error: {
+            message: `账号 ${picked.account.id} 请求上游失败: ${error instanceof Error ? error.message : String(error)}`,
+            type: "account_request_failed"
+          }
+        };
+        continue;
+      }
 
       if (upstream.statusCode === 401) {
-        const refreshed = await refreshAccountTokens(picked.account.id);
-        accessToken = refreshed.tokens?.access_token ?? accessToken;
-        upstream = await sendUpstream();
+        try {
+          const refreshed = await refreshAccountTokens(picked.account.id);
+          accessToken = refreshed.tokens?.access_token ?? accessToken;
+          upstream = await sendUpstream();
+        } catch (error) {
+          // token 刷新失败说明该账号短期内不可用，先熔断再切换。
+          markAccountFailure(picked.account.id, "token_refresh_failed", 10 * 60);
+          lastStatusCode = 503;
+          lastErrorPayload = {
+            error: {
+              message: `账号 ${picked.account.id} 刷新 token 失败: ${error instanceof Error ? error.message : String(error)}`,
+              type: "account_token_refresh_failed"
+            }
+          };
+          continue;
+        }
       }
 
       if (upstream.statusCode === 429 || upstream.statusCode === 403) {
@@ -201,6 +238,19 @@ export async function startServer(port: number): Promise<void> {
             error: {
               message: `账号 ${picked.account.id} 命中额度限制: ${errorText}`,
               type: "account_usage_limited"
+            }
+          };
+          continue;
+        }
+
+        if (upstream.statusCode >= 500) {
+          // 上游 5xx 先视为当前账号链路失败，短时熔断并切到下一个账号。
+          markAccountFailure(picked.account.id, "upstream_5xx", 60);
+          lastStatusCode = upstream.statusCode;
+          lastErrorPayload = {
+            error: {
+              message: `账号 ${picked.account.id} 上游异常: ${errorText}`,
+              type: "account_upstream_failed"
             }
           };
           continue;

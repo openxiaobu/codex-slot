@@ -6,11 +6,14 @@ import {
   writeAuthFile
 } from "./account-store";
 import { loadConfig } from "./config";
-import { setUsageCache } from "./state";
+import { getUsageCache, setUsageCache } from "./state";
 import type {
   CodexAuthFile,
   UsageRefreshResult
 } from "./types";
+
+const USAGE_CACHE_TTL_MS = 60 * 1000;
+const inflightUsageRefreshes = new Map<string, Promise<void>>();
 
 interface WhamUsageResponse {
   plan_type?: string | null;
@@ -171,11 +174,58 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
     weeklyResetAt: normalizeResetAt(
       payload.rate_limit?.secondary_window?.reset_at,
       payload.rate_limit?.secondary_window?.reset_after_seconds
-    )
+    ),
+    refreshedAt: new Date().toISOString()
   };
 
   setUsageCache(result);
   return result;
+}
+
+/**
+ * 判断指定账号的额度缓存是否已经过期。
+ *
+ * @param accountId 账号标识。
+ * @returns `true` 表示不存在缓存或缓存已超过 TTL，需要重新刷新；`false` 表示缓存仍可直接复用。
+ */
+export function isUsageCacheStale(accountId: string): boolean {
+  const usageCache = getUsageCache(accountId);
+
+  if (!usageCache?.refreshedAt) {
+    return true;
+  }
+
+  const refreshedAt = Date.parse(usageCache.refreshedAt);
+  if (Number.isNaN(refreshedAt)) {
+    return true;
+  }
+
+  return Date.now() - refreshedAt > USAGE_CACHE_TTL_MS;
+}
+
+/**
+ * 在不阻塞主请求链路的前提下，按需异步刷新指定账号的额度缓存。
+ *
+ * @param accountId 账号标识。
+ * @returns 无返回值；若缓存仍在 TTL 内或已有刷新任务进行中则直接跳过。
+ */
+export function refreshAccountUsageInBackgroundIfNeeded(accountId: string): void {
+  if (!isUsageCacheStale(accountId) || inflightUsageRefreshes.has(accountId)) {
+    return;
+  }
+
+  // 同一账号同一时刻只保留一个后台刷新任务，避免高并发下重复打远端 usage 接口。
+  const refreshTask = (async () => {
+    try {
+      await refreshAccountUsage(accountId);
+    } catch {
+      // 后台刷新失败时保留旧缓存，由正式转发请求中的错误处理继续兜底。
+    } finally {
+      inflightUsageRefreshes.delete(accountId);
+    }
+  })();
+
+  inflightUsageRefreshes.set(accountId, refreshTask);
 }
 
 /**

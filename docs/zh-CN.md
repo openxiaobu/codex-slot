@@ -10,7 +10,7 @@
 
 - 复用官方 `~/.codex` 登录态
 - 将多个账号或工作空间作为独立槽位管理
-- 调用官方 usage 接口获取最新额度
+- 在需要时手动刷新 usage 缓存用于状态展示
 - 通过本地 provider 给 `Codex` 使用
 - 对临时限流、5 小时限制、周限制做本地熔断
 
@@ -70,12 +70,19 @@ codexl stop
 
 ## `status` 的数据来源
 
-`codexl status` 不是直接展示官方 `registry.json` 的旧缓存，而是：
+`codexl status` 会主动刷新一次 usage，再展示本地最新状态：
 
 1. 从官方登录态读取 `access_token`、`refresh_token`、`account_id`
 2. 请求 `https://chatgpt.com/backend-api/wham/usage`
 3. 将最新结果写入 `~/.codexl/state.json`
 4. 最后读取本地最新缓存并展示
+
+代理转发链路本身不会为了发请求而同步刷新 usage。
+实际切换依据是当前本地可用状态与真实请求结果：
+
+- 优先从可用账号里直接发请求
+- 若命中 `403`、`429`、`usage limit`，立即标记该账号并切换下一个
+- 若请求失败、token 刷新失败或上游 `5xx`，也会做短时熔断，避免连续撞到同一个异常账号
 
 ## `start` 会写什么配置
 
@@ -114,3 +121,6 @@ wire_api = "responses"
 - 周限制：禁用到周窗口重置时间
 - 5 小时限制：禁用到 5 小时窗口重置时间
 - 临时限流：先禁用 5 分钟
+- 请求失败：先禁用 60 秒
+- 上游 `5xx`：先禁用 60 秒
+- token 刷新失败 / 认证缺失：先禁用 10 分钟
