@@ -11,7 +11,7 @@
 - Fetch the latest usage from the official usage endpoint
 - Expose a local provider endpoint for Codex
 - Apply local cooldown rules for temporary, 5-hour, and weekly limits
-- Write a managed provider block into `~/.codex/config.toml`
+- Automatically switch `~/.codex/config.toml` to the `codexl` provider while the local proxy is running
 
 ## Installation
 
@@ -51,16 +51,10 @@ codexl start
 codexl start --port 4399
 ```
 
-Show the current local endpoint and key:
+`start` will automatically write the required provider config into `~/.codex/config.toml`:
 
 ```bash
-codexl get
-```
-
-Write provider config into `~/.codex/config.toml`:
-
-```bash
-codexl config
+codexl start
 ```
 
 ## Commands
@@ -72,8 +66,6 @@ codexl import <name> [HOME]
 codexl status
 codexl start [--port <port>]
 codexl stop
-codexl get
-codexl config [codexPath]
 ```
 
 ## How `status` Works
@@ -87,9 +79,9 @@ Instead it:
 3. Stores the latest result in `~/.codexl/state.json`
 4. Renders the latest local cache
 
-## Generated Codex Config
+## Managed Codex Config
 
-`codexl config` writes a managed provider block like this:
+`codexl start` writes a managed provider block like this:
 
 ```toml
 # >>> codexl managed start >>>
@@ -107,7 +99,8 @@ Behavior:
 - If global `model_provider` exists, it is changed to `codexl`
 - If commented `# model_provider = ...` exists, it is reopened as `model_provider = "codexl"`
 - Global `model` is kept unchanged
-- If you start with `--port`, the port is saved to `~/.codexl/config.yaml`, and later `get` / `config` will use that port
+- If you start with `--port`, the port is saved to `~/.codexl/config.yaml`
+- `codexl stop` comments out the active `model_provider = "codexl"` line and keeps the rest of the file unchanged
 
 ## Data Directory
 

@@ -19,6 +19,8 @@ import {
 } from "./config";
 import { loginManagedAccount } from "./login";
 import { startServer } from "./server";
+import {
+} from "./state";
 import { collectAccountStatuses, renderStatusTable } from "./status";
 import { refreshAllAccountUsage } from "./usage-sync";
 
@@ -142,6 +144,9 @@ async function handleStart(portOverride?: string): Promise<void> {
     }
     return;
   }
+
+  applyManagedCodexConfig();
+
   const logPath = getServiceLogPath();
   const logFd = fs.openSync(logPath, "a");
   const child = spawn(process.execPath, [__filename.replace(/cli\.js$/, "serve.js"), "--port", String(port)], {
@@ -167,43 +172,46 @@ function handleStop(): void {
 
   if (!pid) {
     console.log("服务未运行");
+    deactivateManagedCodexConfig();
     return;
   }
 
   process.kill(pid, "SIGTERM");
   fs.rmSync(getPidPath(), { force: true });
+  deactivateManagedCodexConfig();
   console.log(`服务已停止，PID=${pid}`);
 }
 
 /**
- * 输出当前 `codex` 需要的 provider 配置与本地 key 信息。
+ * 对正则元字符做转义，供动态构造匹配模式使用。
  *
- * @returns 无返回值。
+ * @param input 原始字符串。
+ * @returns 经过转义后的安全正则片段。
  */
-function handleGetConfig(): void {
-  const config = loadConfig();
-
-  console.log(`base_url=${`http://${config.server.host}:${config.server.port}/v1`}`);
-  console.log(`api_key=${config.server.api_key}`);
-}
-
 function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
- * 将 codexl provider 配置写入指定的 codex config.toml。
+ * 返回默认的 `codex config.toml` 路径。
  *
- * @param targetPathOrDir 可选的 codex 配置目录或 config.toml 文件路径。
- * @returns 无返回值。
+ * @returns 默认 `config.toml` 绝对路径。
  */
-function handleConfig(targetPathOrDir?: string): void {
+function getDefaultCodexConfigPath(): string {
+  return path.join(process.env.HOME ?? "", ".codex", "config.toml");
+}
+
+/**
+ * 生成 codexl 托管的 provider 配置块。
+ *
+ * @returns 可直接写入 `config.toml` 的配置块内容。
+ */
+function buildManagedConfigBlock(): string {
   const config = loadConfig();
-  const rawTarget = targetPathOrDir ? expandHome(targetPathOrDir) : path.join(process.env.HOME ?? "", ".codex", "config.toml");
-  const targetFile = rawTarget.endsWith(".toml") ? rawTarget : path.join(rawTarget, "config.toml");
   const startMarker = "# >>> codexl managed start >>>";
   const endMarker = "# <<< codexl managed end <<<";
-  const block = [
+
+  return [
     startMarker,
     "[model_providers.codexl]",
     'name = "codexl"',
@@ -212,6 +220,23 @@ function handleConfig(targetPathOrDir?: string): void {
     'wire_api = "responses"',
     endMarker
   ].join("\n");
+}
+
+/**
+ * 将 codexl provider 配置写入指定的 codex config.toml。
+ *
+ * @param targetPathOrDir 可选的 codex 配置目录或 config.toml 文件路径。
+ * @returns 实际写入的 `config.toml` 文件路径。
+ */
+function applyManagedCodexConfig(
+  targetPathOrDir?: string,
+  options?: { silent?: boolean }
+): string {
+  const rawTarget = targetPathOrDir ? expandHome(targetPathOrDir) : getDefaultCodexConfigPath();
+  const targetFile = rawTarget.endsWith(".toml") ? rawTarget : path.join(rawTarget, "config.toml");
+  const startMarker = "# >>> codexl managed start >>>";
+  const endMarker = "# <<< codexl managed end <<<";
+  const block = buildManagedConfigBlock();
 
   let original = "";
   if (fs.existsSync(targetFile)) {
@@ -293,10 +318,39 @@ function handleConfig(targetPathOrDir?: string): void {
 
   fs.writeFileSync(targetFile, nextContent, "utf8");
 
-  console.log(`已写入: ${targetFile}`);
-  console.log(`base_url=http://${config.server.host}:${config.server.port}/v1`);
-  console.log(`api_key=${config.server.api_key}`);
-  console.log('提示: 已写入 codexl provider；如果原来存在 model_provider，则已切换为 codexl；model 保持不变。');
+  if (!options?.silent) {
+    const config = loadConfig();
+    console.log(`已写入: ${targetFile}`);
+    console.log(`base_url=http://${config.server.host}:${config.server.port}/v1`);
+    console.log(`api_key=${config.server.api_key}`);
+    console.log("提示: start 会自动接管 codex provider，stop 会自动恢复。");
+  }
+
+  return targetFile;
+}
+
+/**
+ * 关闭 codexl 作为当前默认 provider 的接管状态。
+ *
+ * @returns 无返回值。
+ */
+function deactivateManagedCodexConfig(): void {
+  const targetFile = getDefaultCodexConfigPath();
+
+  if (!fs.existsSync(targetFile)) {
+    return;
+  }
+
+  const original = fs.readFileSync(targetFile, "utf8");
+  const nextContent = original.replace(
+    /^(\s*)model_provider\s*=\s*"codexl"\s*$/m,
+    '$1# model_provider = "codexl"'
+  );
+
+  if (nextContent !== original) {
+    fs.writeFileSync(targetFile, nextContent, "utf8");
+    console.log(`已更新: ${targetFile}`);
+  }
 }
 
 /**
@@ -311,10 +365,9 @@ async function main(): Promise<void> {
   loadConfig();
 
   program
-    .name("codexsw")
     .name("codexl")
     .description("本地 Codex 多账号切换与状态管理工具")
-    .version("0.1.0");
+    .version("0.1.2");
 
   program
     .command("add")
@@ -348,12 +401,6 @@ async function main(): Promise<void> {
       await handleStart(options.port);
     });
   program.command("stop").description("停止后台代理服务").action(handleStop);
-  program.command("get").description("输出当前 base_url 和 api_key").action(handleGetConfig);
-  program
-    .command("config")
-    .description("自动写入 codex 的 config.toml，默认 ~/.codex/config.toml")
-    .argument("[codexPath]", "codex 配置目录或 config.toml 文件路径")
-    .action(handleConfig);
 
   await program.parseAsync(process.argv);
 }

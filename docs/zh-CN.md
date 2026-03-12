@@ -51,16 +51,10 @@ codexl start
 codexl start --port 4399
 ```
 
-查看当前代理地址和 key：
+`start` 会自动把需要的 provider 配置写入 `~/.codex/config.toml`：
 
 ```bash
-codexl get
-```
-
-写入 `~/.codex/config.toml`：
-
-```bash
-codexl config
+codexl start
 ```
 
 ## 命令
@@ -72,8 +66,6 @@ codexl import <name> [HOME]
 codexl status
 codexl start [--port <port>]
 codexl stop
-codexl get
-codexl config [codexPath]
 ```
 
 ## `status` 的数据来源
@@ -85,9 +77,9 @@ codexl config [codexPath]
 3. 将最新结果写入 `~/.codexl/state.json`
 4. 最后读取本地最新缓存并展示
 
-## `config` 会写什么
+## `start` 会写什么配置
 
-`codexl config` 默认会向 `~/.codex/config.toml` 写入：
+`codexl start` 默认会向 `~/.codex/config.toml` 写入：
 
 ```toml
 # >>> codexl managed start >>>
@@ -105,7 +97,8 @@ wire_api = "responses"
 - 如果全局 `model_provider` 已存在，会改成 `codexl`
 - 如果只有注释的 `# model_provider = ...`，也会被打开并改成 `codexl`
 - 全局 `model` 不会改
-- 如果通过 `codexl start --port <端口>` 指定端口，后续 `get` / `config` 会使用该端口
+- 如果通过 `codexl start --port <端口>` 指定端口，会把端口写入 `~/.codexl/config.yaml`
+- `codexl stop` 只会把当前生效的 `model_provider = "codexl"` 注释掉，其他配置保持不变
 
 ## 本地目录
 
