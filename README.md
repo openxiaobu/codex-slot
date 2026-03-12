@@ -1,6 +1,6 @@
-# codexl
+# codex-slot
 
-`codexl` is a local multi-account / multi-workspace switcher for Codex.
+`codex-slot` is a local multi-account / multi-workspace switcher for Codex.
 
 [中文文档](./docs/zh-CN.md)
 
@@ -11,18 +11,18 @@
 - Refresh and cache the latest usage from the official usage endpoint
 - Expose a local provider endpoint for Codex
 - Apply local block rules for temporary, 5-hour, and weekly limits
-- Automatically switch `~/.codex/config.toml` to the `codexl` provider while the local proxy is running (and restore it on stop)
+- Automatically switch `~/.codex/config.toml` to the `cslot` provider while the local proxy is running (and restore it on stop)
 
 ## Installation
 
 ```bash
-npm i -g @openxiaobu/codexl
+npm i -g codex-slot
 ```
 
 Verify:
 
 ```bash
-codexl --help
+codex-slot --help
 ```
 
 This repository is the source repository.
@@ -33,15 +33,15 @@ GitHub installation from the repository URL is not supported.
 Import your current Codex login state:
 
 ```bash
-codexl import current ~
+codex-slot import current ~
 ```
 
-`import` copies the official login state into `~/.codexl/homes/<name>` instead of referencing the source HOME directly.
+`import` copies the official login state into `~/.cslot/homes/<name>` instead of referencing the source HOME directly.
 
 Check latest usage:
 
 ```bash
-codexl status
+codex-slot status
 ```
 
 By default, `status` will:
@@ -59,72 +59,72 @@ By default, `status` will:
 If you only want a non-interactive snapshot of the current state:
 
 ```bash
-codexl status --no-interactive
+codex-slot status --no-interactive
 ```
 
 Start the local proxy:
 
 ```bash
-codexl start
-codexl start --port 4399
+codex-slot start
+codex-slot start --port 4399
 ```
 
 `start` will automatically write the required provider config into `~/.codex/config.toml`:
 
 ```bash
-codexl start
+codex-slot start
 ```
 
 ## Commands
 
 ```bash
-codexl add <name>
-codexl del <name>
-codexl import <name> [HOME]
-codexl status
-codexl start [--port <port>]
-codexl stop
+codex-slot add <name>
+codex-slot del <name>
+codex-slot import <name> [HOME]
+codex-slot status
+codex-slot start [--port <port>]
+codex-slot stop
 ```
 
 ## How `status` Works
 
-`codexl status` does not render stale data from the official `registry.json` cache.
+`codex-slot status` does not render stale data from the official `registry.json` cache.
 
 Instead it:
 
 1. Reads `access_token`, `refresh_token`, and `account_id` from the official Codex login state
 2. Requests `https://chatgpt.com/backend-api/wham/usage`
-3. Stores the latest result in `~/.codexl/state.json`
+3. Stores the latest result in `~/.cslot/state.json`
 4. Renders the latest local cache
 
 ## Managed Codex Config
 
-`codexl start` writes or updates a provider block like this, based on the current `~/.codexl/config.yaml`:
+`codex-slot start` writes or updates a provider block like this, based on the current `~/.cslot/config.yaml`:
 
 ```toml
-[model_providers.codexl]
-name = "codexl"
+[model_providers.cslot]
+name = "cslot"
 base_url = "http://127.0.0.1:4389/v1"
-http_headers = { Authorization = "Bearer codexl-defaultkey" }
+http_headers = { Authorization = "Bearer cslot-defaultkey" }
 wire_api = "responses"
 ```
 
 Behavior:
 
-- If global `model_provider` or `# model_provider = ...` exists, it is normalized to `model_provider = "codexl"`
-- If `[model_providers.codexl]` already exists, only that provider block is replaced with the fresh one above
+- If global `model_provider` or `# model_provider = ...` exists, it is normalized to `model_provider = "cslot"`
+- If `[model_providers.cslot]` already exists, only that provider block is replaced with the fresh one above
 - Other providers and settings in `config.toml` are left untouched
-- If you start with `--port`, the port is saved to `~/.codexl/config.yaml`
-- `codexl stop` comments out the active `model_provider = "codexl"` line and keeps the rest of the file unchanged
+- If you start with `--port`, the port is saved to `~/.cslot/config.yaml`
+- `cslot stop` comments out the active `model_provider = "cslot"` line and keeps the rest of the file unchanged
 
 ## Data Directory
 
-`codexl` uses:
+`codex-slot` uses:
 
-- `~/.codexl/config.yaml`
-- `~/.codexl/state.json`
-- `~/.codexl/codexl.pid`
-- `~/.codexl/logs/service.log`
+- `~/.cslot/config.yaml`
+- `~/.cslot/state.json`
+- `~/.cslot/cslot.pid`
+- `~/.cslot/logs/service.log`
 
 If you previously used `~/.codexsw`, it is migrated automatically.
 
@@ -136,8 +136,8 @@ If you previously used `~/.codexsw`, it is migrated automatically.
 
 ## Repository
 
-- GitHub: https://github.com/openxiaobu/codexl
-- Issues: https://github.com/openxiaobu/codexl/issues
+- GitHub: https://github.com/openxiaobu/codex-slot
+- Issues: https://github.com/openxiaobu/codex-slot/issues
 
 ## Development
 

@@ -1,11 +1,12 @@
 {
-  "name": "@openxiaobu/codexl",
-  "version": "0.1.19",
+  "name": "codex-slot",
+  "version": "0.1.1",
   "description": "本地 Codex 多账号切换与状态管理工具",
   "type": "commonjs",
   "main": "dist/cli.js",
   "bin": {
-    "codexl": "dist/cli.js"
+    "codex-slot": "dist/cli.js",
+    "cslot": "dist/cli.js"
   },
   "files": [
     "dist"
@@ -27,11 +28,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openxiaobu/codexl.git"
+    "url": "git+https://github.com/openxiaobu/codex-slot.git"
   },
-  "homepage": "https://github.com/openxiaobu/codexl#readme",
+  "homepage": "https://github.com/openxiaobu/codex-slot#readme",
   "bugs": {
-    "url": "https://github.com/openxiaobu/codexl/issues"
+    "url": "https://github.com/openxiaobu/codex-slot/issues"
   },
   "dependencies": {
     "commander": "^14.0.3",

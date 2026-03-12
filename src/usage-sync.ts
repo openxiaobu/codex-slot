@@ -116,7 +116,7 @@ export async function refreshAccountTokens(accountId: string): Promise<CodexAuth
 }
 
 /**
- * 查询单个账号的最新额度信息，并写入 codexl 自己的 usage 缓存。
+ * 查询单个账号的最新额度信息，并写入 cslot 自己的 usage 缓存。
  *
  * @param accountId 账号标识。
  * @returns 刷新后的额度摘要。
@@ -142,7 +142,7 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
     headers: {
       authorization: `Bearer ${accessToken}`,
       accept: "application/json",
-      "user-agent": "codexl/0.1.0",
+      "user-agent": "codex-slot/0.1.1",
       ...(accountIdHeader ? { "chatgpt-account-id": accountIdHeader } : {})
     }
   });

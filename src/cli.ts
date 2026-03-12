@@ -325,50 +325,82 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
 }
 
 /**
- * 将已有的 Codex HOME 目录中的登录态复制到 codexl 自己的隔离目录并纳入管理。
+ * 将已有的 Codex HOME 目录中的登录态复制到 cslot 自己的隔离目录并纳入管理。
  *
- * @param accountId 本地账号标识。
+ * @param name 本地账号标识（等同于配置中的 name 字段）。
  * @param codexHome 现有 HOME 目录；若未传则默认使用当前用户 HOME。
  * @returns 无返回值。
  */
-function handleAccountImport(accountId: string, codexHome?: string): void {
+function handleAccountImport(name: string, codexHome?: string): void {
   const sourceHome = codexHome ? expandHome(codexHome) : process.env.HOME ?? "";
-  const managedHome = getManagedHome(accountId);
+  const managedHome = getManagedHome(name);
 
   cloneCodexAuthState(sourceHome, managedHome);
 
-  const account = registerManagedAccount(accountId, managedHome);
+  const account = registerManagedAccount(name, managedHome);
   console.log(`账号已导入: ${account.id}`);
   console.log(`来源 HOME: ${sourceHome}`);
   console.log(`已复制到: ${account.codex_home}`);
 }
 
 /**
- * 执行隔离登录流程，将账号录入到 codexl 管理目录。
+ * 执行隔离登录流程，将账号录入到 cslot 管理目录。
  *
- * @param accountId 本地账号标识。
+ * @param name 本地账号标识（等同于配置中的 name 字段）。
  * @returns Promise，无返回值。
  */
-async function handleAccountLogin(accountId: string): Promise<void> {
-  const home = await loginManagedAccount(accountId);
+async function handleAccountLogin(name: string): Promise<void> {
+  const home = await loginManagedAccount(name);
   console.log(`登录完成，账号目录: ${home}`);
 }
 
 /**
  * 删除配置中的账号项。
  *
- * @param accountId 本地账号标识。
+ * @param name 本地账号标识（等同于配置中的 name 字段）。
  * @returns 无返回值。
  * @throws 当账号不存在时抛出错误。
  */
-function handleAccountRemove(accountId: string): void {
-  const removed = removeManagedAccount(accountId);
+function handleAccountRemove(name: string): void {
+  const removed = removeManagedAccount(name);
 
   if (!removed) {
-    throw new Error(`未找到账号 ${accountId}`);
+    throw new Error(`未找到账号 ${name}`);
   }
 
   console.log(`已删除账号配置: ${removed.id}`);
+}
+
+/**
+ * del 子命令入口：在未提供 name 时先展示当前已录入账号列表，便于选择。
+ *
+ * @param name 可选的账号标识（等同于配置中的 name 字段）。
+ * @returns 无返回值。
+ */
+function handleAccountRemoveCommand(name?: string): void {
+  if (!name) {
+    const config = loadConfig();
+
+    if (config.accounts.length === 0) {
+      console.log("当前没有已录入账号。");
+      return;
+    }
+
+    console.log("当前已录入账号（name）：");
+    for (const account of config.accounts) {
+      if (account.email) {
+        console.log(`- ${account.id} (${account.email})`);
+      } else {
+        console.log(`- ${account.id}`);
+      }
+    }
+    console.log("");
+    console.log("请使用以下命令删除指定账号，例如：");
+    console.log("  codex-slot del <name>");
+    return;
+  }
+
+  handleAccountRemove(name);
 }
 
 /**
@@ -401,7 +433,7 @@ function getRunningPid(): number | null {
 }
 
 /**
- * 后台启动 codexl 服务并写入 PID 文件。
+ * 后台启动 cslot 服务并写入 PID 文件。
  *
  * @returns Promise，无返回值。
  * @throws 当服务已在运行或子进程启动失败时抛出异常。
@@ -421,7 +453,7 @@ async function handleStart(portOverride?: string): Promise<void> {
     console.log(`服务已在运行，PID=${runningPid}`);
     if (portOverride) {
       console.log(`已将新端口写入配置: ${port}`);
-      console.log("请先执行 codexl stop，再执行 codexl start 使新端口生效。");
+      console.log("请先执行 cslot stop，再执行 cslot start 使新端口生效。");
     }
     return;
   }
@@ -444,7 +476,7 @@ async function handleStart(portOverride?: string): Promise<void> {
 }
 
 /**
- * 停止后台运行的 codexl 服务。
+ * 停止后台运行的 cslot 服务。
  *
  * @returns 无返回值。
  */
@@ -494,7 +526,7 @@ function getDefaultCodexConfigPath(): string {
 }
 
 /**
- * 生成 codexl provider 配置块。
+ * 生成 cslot provider 配置块。
  *
  * @returns 可直接写入 `config.toml` 的配置块内容。
  */
@@ -502,8 +534,8 @@ function buildManagedConfigBlock(): string {
   const config = loadConfig();
 
   return [
-    "[model_providers.codexl]",
-    'name = "codexl"',
+    "[model_providers.cslot]",
+    'name = "cslot"',
     `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
     `http_headers = { Authorization = "Bearer ${config.server.api_key}" }`,
     'wire_api = "responses"'
@@ -511,7 +543,7 @@ function buildManagedConfigBlock(): string {
 }
 
 /**
- * 将 codexl provider 配置写入指定的 codex config.toml。
+ * 将 cslot provider 配置写入指定的 codex config.toml。
  *
  * @param targetPathOrDir 可选的 codex 配置目录或 config.toml 文件路径。
  * @returns 实际写入的 `config.toml` 文件路径。
@@ -532,7 +564,7 @@ function applyManagedCodexConfig(
   // 更稳定的策略：仅按 provider 名称和 model_provider 改动，不引入额外的 marker。
   const lines = original.length > 0 ? original.split(/\r?\n/) : [];
   let replacedModelProvider = false;
-  const modelProviderLine = 'model_provider = "codexl"';
+  const modelProviderLine = 'model_provider = "cslot"';
 
   for (let i = 0; i < lines.length; i += 1) {
     const trimmed = lines[i].trim();
@@ -561,14 +593,14 @@ function applyManagedCodexConfig(
     }
   }
 
-  // 替换或追加 [model_providers.codexl] 这一段配置。
+  // 替换或追加 [model_providers.cslot] 这一段配置。
   const blockLines = block.split("\n");
   let insertAfterIndex = -1;
 
   for (let i = 0; i < lines.length; i += 1) {
     const trimmed = lines[i].trim();
 
-    if (trimmed === "[model_providers.codexl]") {
+    if (trimmed === "[model_providers.cslot]") {
       let j = i;
 
       while (j < lines.length) {
@@ -582,7 +614,7 @@ function applyManagedCodexConfig(
         j += 1;
       }
 
-      // 删除旧的 codexl provider 表块，准备写入新的。
+      // 删除旧的 cslot provider 表块，准备写入新的。
       lines.splice(i, j - i);
       insertAfterIndex = i - 1;
       i = j - 1;
@@ -613,7 +645,7 @@ function applyManagedCodexConfig(
 }
 
 /**
- * 关闭 codexl 作为当前默认 provider 的接管状态。
+ * 关闭 cslot 作为当前默认 provider 的接管状态。
  *
  * @returns 无返回值。
  */
@@ -626,8 +658,8 @@ function deactivateManagedCodexConfig(): void {
 
   const original = fs.readFileSync(targetFile, "utf8");
   const nextContent = original.replace(
-    /^(\s*)model_provider\s*=\s*"codexl"\s*$/m,
-    '$1# model_provider = "codexl"'
+    /^(\s*)model_provider\s*=\s*"cslot"\s*$/m,
+    '$1# model_provider = "cslot"'
   );
 
   if (nextContent !== original) {
@@ -650,26 +682,26 @@ async function main(): Promise<void> {
   loadConfig();
 
   program
-    .name("codexl")
+    .name("codex-slot")
     .description("本地 Codex 多账号切换与状态管理工具")
     .version(getCliVersion());
 
   program
     .command("add")
     .description("登录并新增一个账号或工作空间")
-    .argument("<accountId>", "账号标识")
-    .action(async (accountId: string) => {
-      await handleAccountLogin(accountId);
+    .argument("<name>", "账号标识（用于本地区分）")
+    .action(async (name: string) => {
+      await handleAccountLogin(name);
     });
   program
     .command("del")
     .description("删除一个已录入账号")
-    .argument("<accountId>", "账号标识")
-    .action(handleAccountRemove);
+    .argument("[name]", "账号标识（用于本地区分），留空时会列出当前所有账号")
+    .action(handleAccountRemoveCommand);
   program
     .command("import")
     .description("导入当前或指定 HOME 下的官方 codex 登录态")
-    .argument("<accountId>", "账号标识")
+    .argument("<name>", "账号标识（用于本地区分）")
     .argument("[codexHome]", "已有 HOME 目录，默认当前用户 HOME")
     .action(handleAccountImport);
   program
@@ -693,6 +725,6 @@ async function main(): Promise<void> {
 
 void main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`codexl 执行失败: ${message}`);
+  console.error(`codex-slot 执行失败: ${message}`);
   process.exit(1);
 });

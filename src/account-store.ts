@@ -186,7 +186,7 @@ export function resolvePrimaryRegistryAccount(codexHome: string): CodexRegistryA
 }
 
 /**
- * 将账号注册到 codexl 配置中，并为其准备独立 HOME 目录。
+ * 将账号注册到 cslot 配置中，并为其准备独立 HOME 目录。
  *
  * @param accountId 本地账号标识。
  * @param codexHome 可选的自定义 HOME 目录；未提供时使用默认路径。

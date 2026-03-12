@@ -21,6 +21,6 @@ async function main(): Promise<void> {
 
 void main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`codexl service 启动失败: ${message}`);
+  console.error(`cslot service 启动失败: ${message}`);
   process.exit(1);
 });

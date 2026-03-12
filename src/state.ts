@@ -8,7 +8,7 @@ function getStatePath(): string {
 }
 
 /**
- * 读取 codexl 的本地运行状态；文件不存在时返回默认空状态。
+ * 读取 cslot 的本地运行状态；文件不存在时返回默认空状态。
  *
  * @returns 当前持久化状态。
  */
@@ -37,7 +37,7 @@ export function loadState(): CodexSwState {
 }
 
 /**
- * 持久化 codexl 的本地运行状态。
+ * 持久化 cslot 的本地运行状态。
  *
  * @param state 待写入状态对象。
  * @returns 无返回值。
@@ -101,7 +101,7 @@ export function getAccountBlock(accountId: string): AccountBlockState | null {
 }
 
 /**
- * 更新指定账号的最新额度缓存，仅写入 codexl 自己的状态文件。
+ * 更新指定账号的最新额度缓存，仅写入 cslot 自己的状态文件。
  *
  * @param usage 最新额度结果。
  * @returns 无返回值。

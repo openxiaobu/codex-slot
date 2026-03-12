@@ -1,10 +1,10 @@
-# codexl 中文文档
+# codex-slot 中文文档
 
 [English README](../README.md)
 
 ## 简介
 
-`codexl` 是一个本地 `Codex` 多账号 / 多工作空间切换器。
+`codex-slot` 是一个本地 `Codex` 多账号 / 多工作空间切换器。
 
 它的目标是：
 
@@ -17,13 +17,13 @@
 ## 安装
 
 ```bash
-npm i -g @openxiaobu/codexl
+npm i -g codex-slot
 ```
 
 验证：
 
 ```bash
-codexl --help
+codex-slot --help
 ```
 
 这个 GitHub 仓库仅用于维护源码与文档，不支持直接从仓库 URL 安装。
@@ -33,15 +33,15 @@ codexl --help
 导入当前默认 `codex` 登录态：
 
 ```bash
-codexl import current ~
+codex-slot import current ~
 ```
 
-`import` 会把官方登录态复制到 `~/.codexl/homes/<name>`，而不是直接引用原始 HOME。
+`import` 会把官方登录态复制到 `~/.cslot/homes/<name>`，而不是直接引用原始 HOME。
 
 查看最新额度：
 
 ```bash
-codexl status
+codex-slot status
 ```
 
 默认会在打印状态表后进入交互模式：
@@ -53,40 +53,40 @@ codexl status
 若只想输出当前状态，用：
 
 ```bash
-codexl status --no-interactive
+codex-slot status --no-interactive
 ```
 
 启动本地代理：
 
 ```bash
-codexl start
-codexl start --port 4399
+codex-slot start
+codex-slot start --port 4399
 ```
 
 `start` 会自动把需要的 provider 配置写入 `~/.codex/config.toml`：
 
 ```bash
-codexl start
+codex-slot start
 ```
 
 ## 命令
 
 ```bash
-codexl add <name>
-codexl del <name>
-codexl import <name> [HOME]
-codexl status
-codexl start [--port <port>]
-codexl stop
+codex-slot add <name>
+codex-slot del <name>
+codex-slot import <name> [HOME]
+codex-slot status
+codex-slot start [--port <port>]
+codex-slot stop
 ```
 
 ## `status` 的数据来源
 
-`codexl status` 会主动刷新一次 usage，再展示本地最新状态：
+`codex-slot status` 会主动刷新一次 usage，再展示本地最新状态：
 
 1. 从官方登录态读取 `access_token`、`refresh_token`、`account_id`
 2. 请求 `https://chatgpt.com/backend-api/wham/usage`
-3. 将最新结果写入 `~/.codexl/state.json`
+3. 将最新结果写入 `~/.cslot/state.json`
 4. 最后读取本地最新缓存并展示
 
 代理转发链路本身不会为了发请求而同步刷新 usage。
@@ -98,33 +98,33 @@ codexl stop
 
 ## `start` 会写什么配置
 
-`codexl start` 默认会向 `~/.codex/config.toml` 写入或更新 `codexl` provider 配置：
+`codex-slot start` 默认会向 `~/.codex/config.toml` 写入或更新 `cslot` provider 配置：
 
 ```toml
-[model_providers.codexl]
-name = "codexl"
+[model_providers.cslot]
+name = "cslot"
 base_url = "http://127.0.0.1:4389/v1"
-http_headers = { Authorization = "Bearer codexl-defaultkey" }
+http_headers = { Authorization = "Bearer cslot-defaultkey" }
 wire_api = "responses"
 ```
 
 规则：
 
-- 如果全局 `model_provider` 或注释的 `# model_provider = ...` 已存在，会统一改成 `model_provider = "codexl"`
-- 如果已有 `[model_providers.codexl]`，只替换该 provider 块
+- 如果全局 `model_provider` 或注释的 `# model_provider = ...` 已存在，会统一改成 `model_provider = "cslot"`
+- 如果已有 `[model_providers.cslot]`，只替换该 provider 块
 - `config.toml` 里其他 provider 和配置保持不变
 - 全局 `model` 不会改
-- 如果通过 `codexl start --port <端口>` 指定端口，会把端口写入 `~/.codexl/config.yaml`
-- `codexl stop` 只会把当前生效的 `model_provider = "codexl"` 注释掉，其他配置保持不变
+- 如果通过 `cslot start --port <端口>` 指定端口，会把端口写入 `~/.cslot/config.yaml`
+- `cslot stop` 只会把当前生效的 `model_provider = "cslot"` 注释掉，其他配置保持不变
 
 ## 本地目录
 
-- 配置文件：`~/.codexl/config.yaml`
-- 状态缓存：`~/.codexl/state.json`
-- 服务 PID：`~/.codexl/codexl.pid`
-- 服务日志：`~/.codexl/logs/service.log`
+- 配置文件：`~/.cslot/config.yaml`
+- 状态缓存：`~/.cslot/state.json`
+- 服务 PID：`~/.cslot/cslot.pid`
+- 服务日志：`~/.cslot/logs/service.log`
 
-如果你之前使用的是 `~/.codexsw`，启动时会自动迁移到 `~/.codexl`。
+如果你之前使用的是 `~/.codexsw`，启动时会自动迁移到 `~/.cslot`。
 
 ## 限流策略
 

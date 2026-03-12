@@ -186,7 +186,7 @@ function buildUpstreamHeaders(
 
   // body 会在本地先读取成 Buffer 以支持失败后切换账号重试，因此这里重算长度。
   headers["content-length"] = String(bodyLength);
-  headers["user-agent"] = "codexl/0.1.0";
+  headers["user-agent"] = "codex-slot/0.1.1";
 
   if (accountIdHeader) {
     headers["chatgpt-account-id"] = accountIdHeader;

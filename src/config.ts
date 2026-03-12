@@ -20,13 +20,13 @@ const configSchema = z.object({
     .object({
       host: z.string().default("127.0.0.1"),
       port: z.number().int().default(4389),
-      api_key: z.string().default("codexl-defaultkey"),
+      api_key: z.string().default("cslot-defaultkey"),
       body_limit_mb: z.number().positive().default(512)
     })
     .default({
       host: "127.0.0.1",
       port: 4389,
-      api_key: "codexl-defaultkey",
+      api_key: "cslot-defaultkey",
       body_limit_mb: 512
     }),
   upstream: z
@@ -44,20 +44,20 @@ const configSchema = z.object({
 });
 
 /**
- * 返回 codexl 的根目录，并确保基础目录结构存在。
+ * 返回 cslot 的根目录，并确保基础目录结构存在。
  *
- * @returns codexl 根目录绝对路径。
+ * @returns cslot 根目录绝对路径。
  * @throws 当目录无法创建时抛出文件系统错误。
  */
 export function getCodexSwHome(): string {
-  const home = path.join(os.homedir(), ".codexl");
+  const home = path.join(os.homedir(), ".cslot");
   const legacyHome = path.join(os.homedir(), ".codexsw");
 
   if (!fs.existsSync(home) && fs.existsSync(legacyHome)) {
     fs.cpSync(legacyHome, home, { recursive: true });
   }
 
-  // 先创建 codexl 根目录，后续命令统一基于该目录读写状态。
+  // 先创建 cslot 根目录，后续命令统一基于该目录读写状态。
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(path.join(home, "homes"), { recursive: true });
   fs.mkdirSync(path.join(home, "logs"), { recursive: true });
@@ -66,7 +66,7 @@ export function getCodexSwHome(): string {
 }
 
 /**
- * 返回 codexl 配置文件路径。
+ * 返回 cslot 配置文件路径。
  *
  * @returns 配置文件绝对路径。
  */
@@ -80,7 +80,7 @@ export function getConfigPath(): string {
  * @returns PID 文件绝对路径。
  */
 export function getPidPath(): string {
-  return path.join(getCodexSwHome(), "codexl.pid");
+  return path.join(getCodexSwHome(), "cslot.pid");
 }
 
 /**
@@ -111,7 +111,7 @@ export function expandHome(input: string): string {
 }
 
 /**
- * 读取 codexl 配置；若配置不存在则返回默认配置。
+ * 读取 cslot 配置；若配置不存在则返回默认配置。
  *
  * @returns 经过 schema 校验后的配置对象。
  * @throws 当配置存在但内容非法时抛出错误。
@@ -126,7 +126,7 @@ export function loadConfig(): CodexSwConfig {
       server: {
         host: "127.0.0.1",
         port: 4389,
-        api_key: "codexl-defaultkey",
+        api_key: "cslot-defaultkey",
         body_limit_mb: 512
       },
       upstream: {
@@ -165,7 +165,7 @@ export function loadConfig(): CodexSwConfig {
     normalized.server.api_key === "local-only-key" ||
     normalized.server.api_key === "codexsw-defaultkey"
   ) {
-    normalized.server.api_key = "codexl-defaultkey";
+    normalized.server.api_key = "cslot-defaultkey";
     changed = true;
   }
 
@@ -178,7 +178,7 @@ export function loadConfig(): CodexSwConfig {
 }
 
 /**
- * 持久化 codexl 配置文件。
+ * 持久化 cslot 配置文件。
  *
  * @param config 待写入的配置对象。
  * @returns 无返回值。
