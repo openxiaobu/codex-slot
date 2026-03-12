@@ -125,33 +125,41 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
       const latestStatuses = collectAccountStatuses();
       const selected = pickBestAccount();
       const statusSource = changed ? latestStatuses : (initialStatuses ?? latestStatuses);
-      const displayStatuses = statusSource.map((item) => ({
-        ...item,
-        name: item.id === selected?.account.id ? `${item.name}*` : item.name
-      }));
+      const statusById = new Map(statusSource.map((item) => [item.id, item]));
+      const autoSelectedId = selected?.account.id ?? null;
+
+      // 交互态按账号列表顺序重组表格行，确保选择框与状态信息严格同行显示。
+      const displayStatuses = accounts
+        .map((account) => {
+          const status = statusById.get(account.id);
+          if (!status) {
+            return null;
+          }
+
+          return {
+            ...status,
+            name: account.id === autoSelectedId ? `${status.name}*` : status.name
+          };
+        })
+        .filter((item): item is AccountRuntimeStatus => item !== null);
       const available = statusSource.filter((item) => item.isAvailable).length;
       const fiveHourLimited = statusSource.filter(
         (item) => item.isFiveHourLimited && !item.isWeeklyLimited
       ).length;
       const weeklyLimited = statusSource.filter((item) => item.isWeeklyLimited).length;
-      const autoSelectedId = selected?.account.id ?? null;
       const lines: string[] = [
-        renderStatusTable(displayStatuses),
+        renderStatusTable(displayStatuses, {
+          selectorColumn: {
+            enabledById: Object.fromEntries(accounts.map((account) => [account.id, account.enabled])),
+            cursorAccountId: accounts[cursor]?.id ?? null
+          }
+        }),
         "",
         `available=${available} 5h_limited=${fiveHourLimited} weekly_limited=${weeklyLimited}`,
         `selected=${selected ? selected.account.name : "none"}`,
         "",
-        "空格切换选中账号启用状态，Enter / q 退出："
+        "空格切换当前行启用状态，Enter / q 退出。"
       ];
-
-      for (let i = 0; i < accounts.length; i += 1) {
-        const account = accounts[i];
-        const checkbox = account.enabled ? "[x]" : "[ ]";
-        const displayName = account.id === autoSelectedId ? `${account.name}*` : account.name;
-        const cursorSuffix = i === cursor ? "  <" : "";
-
-        lines.push(`${checkbox} ${displayName}  (${account.codex_home})${cursorSuffix}`);
-      }
 
       // 首次渲染时先换一行，避免粘在上一行输出后面。
       if (renderedLines === 0) {

@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import type { IncomingHttpHeaders } from "node:http";
 import { request } from "undici";
 import { readAuthFile } from "./account-store";
 import { loadConfig } from "./config";
@@ -80,6 +81,77 @@ function markAccountFailure(accountId: string, reason: string, blockSeconds: num
 }
 
 /**
+ * 构造发往上游的请求头，并移除仅属于本地代理链路的头信息。
+ *
+ * @param requestHeaders 客户端发到本地服务的原始请求头。
+ * @param accessToken 当前候选账号可用的上游访问令牌。
+ * @param accountIdHeader 可选的 ChatGPT 账号标识头。
+ * @returns 可直接传给上游请求的请求头对象。
+ */
+function buildUpstreamHeaders(
+  requestHeaders: IncomingHttpHeaders,
+  accessToken: string,
+  bodyLength: number,
+  accountIdHeader?: string
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+
+  for (const [headerName, headerValue] of Object.entries(requestHeaders)) {
+    const normalizedName = headerName.toLowerCase();
+
+    if (
+      headerValue == null ||
+      normalizedName === "authorization" ||
+      normalizedName === "host" ||
+      normalizedName === "connection" ||
+      normalizedName === "content-length"
+    ) {
+      continue;
+    }
+
+    headers[normalizedName] = Array.isArray(headerValue)
+      ? headerValue.join(", ")
+      : headerValue;
+  }
+
+  // 本地服务使用独立 api_key 鉴权，转发时必须替换为真实上游 access token。
+  headers.authorization = `Bearer ${accessToken}`;
+
+  // 未显式传入 Accept 时，补上兼容 SSE 与 JSON 的默认值。
+  if (!headers.accept) {
+    headers.accept = "text/event-stream, application/json";
+  }
+
+  // body 会在本地先读取成 Buffer 以支持失败后切换账号重试，因此这里重算长度。
+  headers["content-length"] = String(bodyLength);
+  headers["user-agent"] = "codexl/0.1.0";
+
+  if (accountIdHeader) {
+    headers["chatgpt-account-id"] = accountIdHeader;
+  }
+
+  return headers;
+}
+
+/**
+ * 读取代理请求的原始 body 字节，供多账号重试时重复发送同一份载荷。
+ *
+ * @param stream 客户端发到代理路由的原始可读流。
+ * @returns 完整请求体的 Buffer；空请求体时返回空 Buffer。
+ * @throws 当读取流失败时抛出底层 I/O 错误。
+ */
+async function readRawRequestBody(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of stream) {
+    // 统一转成 Buffer，避免不同 chunk 类型在后续重发时出现编码歧义。
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  return Buffer.concat(chunks);
+}
+
+/**
  * 启动一个极轻量本地服务，供后续接入代理或脚本化查询使用。
  *
  * 当前阶段服务用途：
@@ -93,7 +165,10 @@ function markAccountFailure(accountId: string, reason: string, blockSeconds: num
  */
 export async function startServer(port: number): Promise<void> {
   const config = loadConfig();
-  const app = Fastify({ logger: false });
+  const app = Fastify({
+    logger: false,
+    bodyLimit: Math.floor(config.server.body_limit_mb * 1024 * 1024)
+  });
 
   app.addHook("onRequest", async (request, reply) => {
     if (request.url === "/health") {
@@ -123,7 +198,12 @@ export async function startServer(port: number): Promise<void> {
     };
   });
 
-  const proxyHandler = async (requestMessage: unknown, reply: { raw: NodeJS.WritableStream & { writeHead: (statusCode: number, headers?: Record<string, string | string[] | number>) => void; end: (chunk?: unknown) => void; }; code: (statusCode: number) => void; send: (payload: unknown) => void; }) => {
+  const proxyHandler = async (
+    requestBodyStream: NodeJS.ReadableStream,
+    requestHeaders: IncomingHttpHeaders,
+    reply: { raw: NodeJS.WritableStream & { writeHead: (statusCode: number, headers?: Record<string, string | string[] | number>) => void; end: (chunk?: unknown) => void; }; code: (statusCode: number) => void; send: (payload: unknown) => void; }
+  ) => {
+    const requestBody = await readRawRequestBody(requestBodyStream);
     const candidates = listCandidateAccounts();
 
     if (candidates.length === 0) {
@@ -163,23 +243,22 @@ export async function startServer(port: number): Promise<void> {
         continue;
       }
 
-      const sendUpstream = async () =>
+      const sendUpstream = async (upstreamAccessToken: string) =>
         await request(`${config.upstream.codex_base_url}/responses`, {
           method: "POST",
-          headers: {
-            authorization: `Bearer ${accessToken}`,
-            accept: "text/event-stream, application/json",
-            "content-type": "application/json",
-            "user-agent": "codexl/0.1.0",
-            ...(accountIdHeader ? { "chatgpt-account-id": accountIdHeader } : {})
-          },
-          body: JSON.stringify(requestMessage)
+          headers: buildUpstreamHeaders(
+            requestHeaders,
+            upstreamAccessToken,
+            requestBody.length,
+            accountIdHeader
+          ),
+          body: requestBody
         });
 
       let upstream;
 
       try {
-        upstream = await sendUpstream();
+        upstream = await sendUpstream(accessToken);
       } catch (error) {
         // 上游连接异常通常是账号或链路瞬时问题，短时标记后继续尝试下一个账号。
         markAccountFailure(picked.account.id, "request_failed", 60);
@@ -197,7 +276,7 @@ export async function startServer(port: number): Promise<void> {
         try {
           const refreshed = await refreshAccountTokens(picked.account.id);
           accessToken = refreshed.tokens?.access_token ?? accessToken;
-          upstream = await sendUpstream();
+          upstream = await sendUpstream(accessToken);
         } catch (error) {
           // token 刷新失败说明该账号短期内不可用，先熔断再切换。
           markAccountFailure(picked.account.id, "token_refresh_failed", 10 * 60);
@@ -290,12 +369,20 @@ export async function startServer(port: number): Promise<void> {
     reply.send(lastErrorPayload);
   };
 
-  app.post("/v1/responses", async (request, reply) => {
-    await proxyHandler(request.body, reply);
-  });
+  await app.register(async (proxyApp) => {
+    // 代理路由需要原样透传 body，不能在本地先做 JSON 解析与大小限制拦截。
+    proxyApp.removeAllContentTypeParsers();
+    proxyApp.addContentTypeParser("*", (request, payload, done) => {
+      done(null, payload);
+    });
 
-  app.post("/backend-api/codex/responses", async (request, reply) => {
-    await proxyHandler(request.body, reply);
+    proxyApp.post("/v1/responses", { bodyLimit: Number.MAX_SAFE_INTEGER }, async (request, reply) => {
+      await proxyHandler(request.body as NodeJS.ReadableStream, request.headers, reply);
+    });
+
+    proxyApp.post("/backend-api/codex/responses", { bodyLimit: Number.MAX_SAFE_INTEGER }, async (request, reply) => {
+      await proxyHandler(request.body as NodeJS.ReadableStream, request.headers, reply);
+    });
   });
 
   await app.listen({

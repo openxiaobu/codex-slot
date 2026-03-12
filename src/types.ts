@@ -63,6 +63,7 @@ export interface CodexSwConfig {
     host: string;
     port: number;
     api_key: string;
+    body_limit_mb: number;
   };
   upstream: {
     codex_base_url: string;

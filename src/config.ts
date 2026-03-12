@@ -20,12 +20,14 @@ const configSchema = z.object({
     .object({
       host: z.string().default("127.0.0.1"),
       port: z.number().int().default(4389),
-      api_key: z.string().default("codexl-defaultkey")
+      api_key: z.string().default("codexl-defaultkey"),
+      body_limit_mb: z.number().positive().default(512)
     })
     .default({
       host: "127.0.0.1",
       port: 4389,
-      api_key: "codexl-defaultkey"
+      api_key: "codexl-defaultkey",
+      body_limit_mb: 512
     }),
   upstream: z
     .object({
@@ -124,7 +126,8 @@ export function loadConfig(): CodexSwConfig {
       server: {
         host: "127.0.0.1",
         port: 4389,
-        api_key: "codexl-defaultkey"
+        api_key: "codexl-defaultkey",
+        body_limit_mb: 512
       },
       upstream: {
         codex_base_url: "https://chatgpt.com/backend-api/codex",

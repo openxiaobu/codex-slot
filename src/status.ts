@@ -6,6 +6,13 @@ import {
 import { getAccountBlock, getUsageCache } from "./state";
 import type { AccountRuntimeStatus } from "./types";
 
+interface StatusTableRenderOptions {
+  selectorColumn?: {
+    enabledById: Record<string, boolean>;
+    cursorAccountId: string | null;
+  };
+}
+
 function computeLeftPercent(usedPercent: number | null | undefined): number | null {
   if (usedPercent === null || usedPercent === undefined || Number.isNaN(usedPercent)) {
     return null;
@@ -165,11 +172,26 @@ export function collectAccountStatuses(): AccountRuntimeStatus[] {
  * 将账号状态渲染为适合终端输出的表格文本。
  *
  * @param statuses 待展示的账号状态列表。
+ * @param options 渲染选项；交互模式下可传入选择列配置，将勾选状态与当前光标合并到表格首列。
  * @returns 可直接打印到终端的表格字符串。
  */
-export function renderStatusTable(statuses: AccountRuntimeStatus[]): string {
+export function renderStatusTable(
+  statuses: AccountRuntimeStatus[],
+  options?: StatusTableRenderOptions
+): string {
+  const selectorColumn = options?.selectorColumn;
   const rows = [
-    ["NAME", "EMAIL", "PLAN", "5H_LEFT", "5H_RESET", "WEEK_LEFT", "WEEK_RESET", "STATUS"]
+    [
+      ...(selectorColumn ? [" "] : []),
+      "NAME",
+      "EMAIL",
+      "PLAN",
+      "5H_LEFT",
+      "5H_RESET",
+      "WEEK_LEFT",
+      "WEEK_RESET",
+      "STATUS"
+    ]
   ];
 
   for (const item of statuses) {
@@ -191,7 +213,14 @@ export function renderStatusTable(statuses: AccountRuntimeStatus[]): string {
       }
     }
 
+    const selectorCell = selectorColumn
+      ? `${selectorColumn.cursorAccountId === item.id ? ">" : " "}[${
+          selectorColumn.enabledById[item.id] ? "x" : " "
+        }]`
+      : null;
+
     rows.push([
+      ...(selectorCell ? [selectorCell] : []),
       item.name,
       item.email ?? "-",
       item.plan,
