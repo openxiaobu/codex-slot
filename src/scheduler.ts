@@ -34,6 +34,28 @@ function isSoftLocalBlocked(status: AccountRuntimeStatus): boolean {
 }
 
 /**
+ * 对未命中额度限制的候选账号按剩余额度与重置时间排序。
+ *
+ * @param statuses 待排序的账号状态列表。
+ * @returns 排序后的账号状态列表，优先返回更适合尝试的账号。
+ */
+function rankEligibleStatuses(statuses: AccountRuntimeStatus[]): AccountRuntimeStatus[] {
+  return [...statuses].sort((left, right) => {
+    const fiveHourDiff = (right.fiveHourLeftPercent ?? -1) - (left.fiveHourLeftPercent ?? -1);
+    if (fiveHourDiff !== 0) {
+      return fiveHourDiff;
+    }
+
+    const weeklyDiff = (right.weeklyLeftPercent ?? -1) - (left.weeklyLeftPercent ?? -1);
+    if (weeklyDiff !== 0) {
+      return weeklyDiff;
+    }
+
+    return nextResetWeight(left.fiveHourResetsAt) - nextResetWeight(right.fiveHourResetsAt);
+  });
+}
+
+/**
  * 选择当前最适合激活的账号。
  *
  * 业务规则：
@@ -60,27 +82,13 @@ export function listCandidateAccounts(): SchedulerPick[] {
     (item) => item.enabled && item.exists && !item.isFiveHourLimited && !item.isWeeklyLimited
   );
 
-  const available = statuses
-    .filter((item) => item.isAvailable)
-    .sort((left, right) => {
-      const fiveHourDiff = (right.fiveHourLeftPercent ?? -1) - (left.fiveHourLeftPercent ?? -1);
-      if (fiveHourDiff !== 0) {
-        return fiveHourDiff;
-      }
-
-      const weeklyDiff = (right.weeklyLeftPercent ?? -1) - (left.weeklyLeftPercent ?? -1);
-      if (weeklyDiff !== 0) {
-        return weeklyDiff;
-      }
-
-      return nextResetWeight(left.fiveHourResetsAt) - nextResetWeight(right.fiveHourResetsAt);
-    });
+  const available = rankEligibleStatuses(statuses.filter((item) => item.isAvailable));
 
   const ranked = available.length > 0 ? available : [];
 
-  // 当系统只剩一个具备真实凭据且未命中额度限制的账号时，允许忽略短期本地熔断继续兜底尝试。
-  if (ranked.length === 0 && eligible.length === 1 && isSoftLocalBlocked(eligible[0])) {
-    ranked.push(eligible[0]);
+  // 当所有未限额账号都只命中短期本地熔断时，仍允许继续兜底尝试，避免把网络抖动误判成“无可用账号”。
+  if (ranked.length === 0 && eligible.length > 0 && eligible.every(isSoftLocalBlocked)) {
+    ranked.push(...rankEligibleStatuses(eligible));
   }
 
   return ranked

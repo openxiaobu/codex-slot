@@ -81,6 +81,68 @@ function markAccountFailure(accountId: string, reason: string, blockSeconds: num
 }
 
 /**
+ * 提取错误对象中最接近底层网络层的错误码，便于区分网络不可达与上游业务异常。
+ *
+ * @param error 捕获到的异常对象。
+ * @returns 错误码；若无法识别则返回 `null`。
+ */
+function extractErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const errnoError = error as NodeJS.ErrnoException & { cause?: unknown };
+  if (typeof errnoError.code === "string" && errnoError.code.length > 0) {
+    return errnoError.code;
+  }
+
+  return extractErrorCode(errnoError.cause);
+}
+
+/**
+ * 判断一次请求失败是否属于本机到上游之间的网络不可达场景。
+ *
+ * @param error 捕获到的异常对象。
+ * @returns `true` 表示网络层异常，不应写入账号熔断；否则返回 `false`。
+ */
+function isNetworkUnavailableError(error: unknown): boolean {
+  const errorCode = extractErrorCode(error);
+
+  return [
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "EHOSTUNREACH",
+    "ENETDOWN",
+    "ENETUNREACH",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ETIMEDOUT",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_SOCKET"
+  ].includes(errorCode ?? "");
+}
+
+/**
+ * 将网络层异常转换为统一的响应体，避免误导成“当前没有可用账号”。
+ *
+ * @param accountId 当前尝试的账号标识。
+ * @param error 捕获到的异常对象。
+ * @returns 统一的网络异常响应体。
+ */
+function buildNetworkUnavailablePayload(accountId: string, error: unknown): {
+  error: { message: string; type: string };
+} {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return {
+    error: {
+      message: `网络不可用，账号 ${accountId} 无法连接上游: ${message}`,
+      type: "network_unavailable"
+    }
+  };
+}
+
+/**
  * 构造发往上游的请求头，并移除仅属于本地代理链路的头信息。
  *
  * @param requestHeaders 客户端发到本地服务的原始请求头。
@@ -260,9 +322,14 @@ export async function startServer(port: number): Promise<void> {
       try {
         upstream = await sendUpstream(accessToken);
       } catch (error) {
-        // 上游连接异常通常是账号或链路瞬时问题，短时标记后继续尝试下一个账号。
-        markAccountFailure(picked.account.id, "request_failed", 60);
         lastStatusCode = 503;
+        if (isNetworkUnavailableError(error)) {
+          lastErrorPayload = buildNetworkUnavailablePayload(picked.account.id, error);
+          continue;
+        }
+
+        // 非网络层异常仍视为当前账号请求链路异常，短时熔断后继续尝试下一个账号。
+        markAccountFailure(picked.account.id, "request_failed", 60);
         lastErrorPayload = {
           error: {
             message: `账号 ${picked.account.id} 请求上游失败: ${error instanceof Error ? error.message : String(error)}`,
@@ -278,9 +345,14 @@ export async function startServer(port: number): Promise<void> {
           accessToken = refreshed.tokens?.access_token ?? accessToken;
           upstream = await sendUpstream(accessToken);
         } catch (error) {
+          lastStatusCode = 503;
+          if (isNetworkUnavailableError(error)) {
+            lastErrorPayload = buildNetworkUnavailablePayload(picked.account.id, error);
+            continue;
+          }
+
           // token 刷新失败说明该账号短期内不可用，先熔断再切换。
           markAccountFailure(picked.account.id, "token_refresh_failed", 10 * 60);
-          lastStatusCode = 503;
           lastErrorPayload = {
             error: {
               message: `账号 ${picked.account.id} 刷新 token 失败: ${error instanceof Error ? error.message : String(error)}`,
