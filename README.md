@@ -18,29 +18,24 @@
 - 本地代理兼容 `Responses API` 风格入口
 - 自动写入 `~/.codex/config.toml`
 
-## Install
-
-本地开发安装：
-
-```bash
-git clone https://github.com/openxiaobu/codexl.git
-cd codexl
-npm install
-npm link
-```
-
-安装完成后可直接使用：
-
-```bash
-codexl --help
-```
-
 GitHub:
 
 - Repository: https://github.com/openxiaobu/codexl
 - Issues: https://github.com/openxiaobu/codexl/issues
 
 ## Quick Start
+
+安装：
+
+```bash
+npm i -g openxiaobu/codexl
+```
+
+确认命令可用：
+
+```bash
+codexl --help
+```
 
 导入当前默认 `codex` 登录态：
 
