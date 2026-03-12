@@ -25,6 +25,30 @@ import { collectAccountStatuses, renderStatusTable } from "./status";
 import { refreshAllAccountUsage } from "./usage-sync";
 
 /**
+ * 读取当前 CLI 的发布版本号，优先与 npm 包元数据保持一致。
+ *
+ * @returns string，当前包版本号；当 package.json 不可读或字段缺失时返回 `0.0.0`。
+ * @throws 无显式抛出；内部异常会被吞掉并回退到默认版本号。
+ */
+function getCliVersion(): string {
+  try {
+    const packageJsonPath = path.resolve(__dirname, "../package.json");
+
+    // 直接读取发布包内的 package.json，避免 CLI 版本号与 npm 发布版本脱节。
+    const packageJsonContent = fs.readFileSync(packageJsonPath, "utf8");
+    const packageJson = JSON.parse(packageJsonContent) as { version?: unknown };
+
+    if (typeof packageJson.version === "string" && packageJson.version.trim().length > 0) {
+      return packageJson.version;
+    }
+  } catch {
+    // 读取失败时使用保底版本，避免 `-V` 命令直接异常退出。
+  }
+
+  return "0.0.0";
+}
+
+/**
  * 刷新所有已录入账号的远端额度，并输出最新状态表格。
  *
  * @returns Promise，无返回值。
@@ -369,7 +393,7 @@ async function main(): Promise<void> {
   program
     .name("codexl")
     .description("本地 Codex 多账号切换与状态管理工具")
-    .version("0.1.2");
+    .version(getCliVersion());
 
   program
     .command("add")
