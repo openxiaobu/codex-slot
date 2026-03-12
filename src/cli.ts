@@ -175,7 +175,10 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         "",
         "空格切换当前行启用状态，Enter / q 退出。"
       ];
-      const nextRenderedLines = countRenderedLines(lines) + 1;
+      // 这里记录的是“重绘完成后，光标回到渲染块起始位置所需上移的行数”。
+      // 由于下方统一只额外输出了一个 `\n`，光标会停在渲染块下一行的行首，
+      // 因此只需要按实际渲染行数回退；不能额外再加 1，否则会吞掉上方一行内容。
+      const nextRenderedLines = countRenderedLines(lines);
 
       // 首次渲染时先换一行，避免粘在上一行输出后面。
       if (renderedLines === 0) {
