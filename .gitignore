@@ -1,0 +1,6 @@
+node_modules
+dist
+.DS_Store
+.codexl
+.codexsw
+npm-debug.log*
