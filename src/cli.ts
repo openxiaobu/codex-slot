@@ -89,6 +89,7 @@ async function handleInteractiveToggle(): Promise<void> {
   const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: (mode: boolean) => void };
   readline.emitKeypressEvents(stdin);
   stdin.setRawMode?.(true);
+  stdin.resume();
 
   const config = loadConfig();
   if (config.accounts.length === 0) {
@@ -105,7 +106,7 @@ async function handleInteractiveToggle(): Promise<void> {
 
   const render = () => {
     const lines: string[] = [];
-    lines.push("空格切换选中账号启用状态，回车确认，q 退出：");
+    lines.push("空格切换选中账号启用状态，Enter / q 退出：");
 
     for (let i = 0; i < accounts.length; i += 1) {
       const account = accounts[i];

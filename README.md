@@ -53,9 +53,8 @@ By default, `status` will:
   - A status column with local block reasons and countdowns (for example: `5h_limited(2h27m)`)
 - Enter an interactive mode where you can toggle `enabled` for accounts:
   - Up/Down: move selection
-  - Space: toggle `[x]` enabled / `[ ]` disabled
-  - Enter: confirm and save
-  - `q`: quit
+  - Space: toggle `[x]` enabled / `[ ]` disabled and save immediately
+  - Enter / `q`: exit the interactive mode
 
 If you only want a non-interactive snapshot of the current state:
 
