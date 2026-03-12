@@ -138,6 +138,7 @@ async function handleInteractiveToggle(): Promise<void> {
       }
     }
     saveConfig(latest);
+    changed = false;
   };
 
   render();
@@ -158,6 +159,7 @@ async function handleInteractiveToggle(): Promise<void> {
     if (key.name === "space") {
       accounts[cursor].enabled = !accounts[cursor].enabled;
       changed = true;
+      applyChanges();
       render();
       return;
     }
@@ -165,22 +167,20 @@ async function handleInteractiveToggle(): Promise<void> {
     if (key.name === "return" || key.name === "enter") {
       if (changed) {
         applyChanges();
-        changed = false;
-        render();
-        console.log("\n已保存账号启用状态变更（按 q 退出）。");
       }
+      stdin.off("keypress", onKeypress);
+      stdin.setRawMode?.(false);
+      console.log("\n已退出账号启用状态编辑。");
       return;
     }
 
     if (key.name === "q" || (key.ctrl && key.name === "c")) {
-      stdin.off("keypress", onKeypress);
-      stdin.setRawMode?.(false);
       if (changed) {
         applyChanges();
-        console.log("\n已保存账号启用状态变更。");
-      } else {
-        console.log("\n未做任何变更。");
       }
+      stdin.off("keypress", onKeypress);
+      stdin.setRawMode?.(false);
+      console.log("\n已退出账号启用状态编辑。");
       return;
     }
   };
