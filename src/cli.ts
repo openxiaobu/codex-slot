@@ -56,6 +56,21 @@ interface StatusCommandOptions {
 }
 
 /**
+ * 统计一段终端输出文本实际占用的逻辑行数。
+ *
+ * @param lines 待输出的文本行数组；数组元素中的换行符会继续拆分计数。
+ * @returns number，完整输出块占用的总行数；空数组时返回 `0`。
+ * @throws 无显式抛出。
+ */
+function countRenderedLines(lines: string[]): number {
+  if (lines.length === 0) {
+    return 0;
+  }
+
+  return lines.reduce((total, line) => total + line.split("\n").length, 0);
+}
+
+/**
  * 刷新所有已录入账号的远端额度，并输出最新状态表格。
  *
  * @returns Promise，无返回值。
@@ -160,6 +175,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         "",
         "空格切换当前行启用状态，Enter / q 退出。"
       ];
+      const nextRenderedLines = countRenderedLines(lines) + 1;
 
       // 首次渲染时先换一行，避免粘在上一行输出后面。
       if (renderedLines === 0) {
@@ -169,10 +185,11 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         process.stdout.write(`\x1b[${renderedLines}A`);
       }
 
-      renderedLines = lines.length;
+      // 先清理旧渲染块，再按新的真实占行数记录，避免表格多行时回退不足。
       process.stdout.write("\x1b[J");
       process.stdout.write(lines.join("\n"));
       process.stdout.write("\n");
+      renderedLines = nextRenderedLines;
     };
 
     const applyChanges = () => {
