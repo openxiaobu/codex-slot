@@ -56,7 +56,7 @@ function resolveBlockWindow(
   ) {
     return {
       until: picked.status.fiveHourResetsAt ?? Math.floor(Date.now() / 1000) + 5 * 60,
-      reason: "five_hour_limited"
+      reason: "5h_limited"
     };
   }
 

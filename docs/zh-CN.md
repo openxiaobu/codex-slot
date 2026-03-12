@@ -44,6 +44,12 @@ codexl import current ~
 codexl status
 ```
 
+默认会在打印状态表后进入交互模式，你可以按照提示输入 `NAME` 来快速启用 / 禁用某个账号；若只想输出当前状态，用：
+
+```bash
+codexl status --no-interactive
+```
+
 启动本地代理：
 
 ```bash

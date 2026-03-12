@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import readline from "node:readline";
 import { Command } from "commander";
 import {
   cloneCodexAuthState,
@@ -48,12 +49,16 @@ function getCliVersion(): string {
   return "0.0.0";
 }
 
+interface StatusCommandOptions {
+  interactive?: boolean;
+}
+
 /**
  * 刷新所有已录入账号的远端额度，并输出最新状态表格。
  *
  * @returns Promise，无返回值。
  */
-async function handleStatus(): Promise<void> {
+async function handleStatus(options?: StatusCommandOptions): Promise<void> {
   await refreshAllAccountUsage();
 
   const statuses = collectAccountStatuses();
@@ -67,6 +72,60 @@ async function handleStatus(): Promise<void> {
 
   console.log("");
   console.log(`available=${available} 5h_limited=${fiveHourLimited} weekly_limited=${weeklyLimited}`);
+
+  const interactive = options?.interactive ?? true;
+
+  if (interactive) {
+    await handleInteractiveToggle();
+  }
+}
+
+async function handleInteractiveToggle(): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.log("当前环境不支持交互式操作，请直接编辑配置文件或使用 --no-interactive 选项。");
+    return;
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  const ask = (question: string): Promise<string> =>
+    new Promise((resolve) => {
+      rl.question(question, (answer) => resolve(answer));
+    });
+
+  try {
+    // 允许连续切换多个账号，回车空行退出。
+    // 这里使用账号 NAME 作为标识，与 status 表格中的首列一致。
+    for (;;) {
+      const name = (await ask("输入要切换启用状态的账号 NAME（直接回车退出）：")).trim();
+
+      if (!name) {
+        break;
+      }
+
+      const config = loadConfig();
+      const index = config.accounts.findIndex((item) => item.name === name);
+
+      if (index < 0) {
+        console.log(`未找到 NAME 为 "${name}" 的账号，请检查后重试。`);
+        continue;
+      }
+
+      const account = config.accounts[index];
+      account.enabled = !account.enabled;
+      config.accounts[index] = account;
+      saveConfig(config);
+
+      console.log(
+        `账号 ${account.name} 已${account.enabled ? "启用" : "禁用"}（id=${account.id}，source=${account.codex_home}）。`
+      );
+    }
+  } finally {
+    rl.close();
+  }
 }
 
 /**
@@ -218,6 +277,17 @@ function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function ensureParentDir(filePath: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function writeFileAtomic(targetFile: string, content: string): void {
+  ensureParentDir(targetFile);
+  const tmpFile = `${targetFile}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmpFile, content, "utf8");
+  fs.renameSync(tmpFile, targetFile);
+}
+
 /**
  * 返回默认的 `codex config.toml` 路径。
  *
@@ -228,23 +298,19 @@ function getDefaultCodexConfigPath(): string {
 }
 
 /**
- * 生成 codexl 托管的 provider 配置块。
+ * 生成 codexl provider 配置块。
  *
  * @returns 可直接写入 `config.toml` 的配置块内容。
  */
 function buildManagedConfigBlock(): string {
   const config = loadConfig();
-  const startMarker = "# >>> codexl managed start >>>";
-  const endMarker = "# <<< codexl managed end <<<";
 
   return [
-    startMarker,
     "[model_providers.codexl]",
     'name = "codexl"',
     `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
     `http_headers = { Authorization = "Bearer ${config.server.api_key}" }`,
-    'wire_api = "responses"',
-    endMarker
+    'wire_api = "responses"'
   ].join("\n");
 }
 
@@ -260,51 +326,57 @@ function applyManagedCodexConfig(
 ): string {
   const rawTarget = targetPathOrDir ? expandHome(targetPathOrDir) : getDefaultCodexConfigPath();
   const targetFile = rawTarget.endsWith(".toml") ? rawTarget : path.join(rawTarget, "config.toml");
-  const startMarker = "# >>> codexl managed start >>>";
-  const endMarker = "# <<< codexl managed end <<<";
   const block = buildManagedConfigBlock();
 
   let original = "";
   if (fs.existsSync(targetFile)) {
     original = fs.readFileSync(targetFile, "utf8");
-  } else {
-    fs.mkdirSync(path.dirname(targetFile), { recursive: true });
   }
 
-  const managedBlockPattern = new RegExp(
-    `${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}\\n?`,
-    "g"
-  );
-  const lines = original.replace(managedBlockPattern, "").split(/\r?\n/);
-  let insertAfterIndex = -1;
-  let hasGlobalModelProvider = false;
+  // 更稳定的策略：仅按 provider 名称和 model_provider 改动，不引入额外的 marker。
+  const lines = original.length > 0 ? original.split(/\r?\n/) : [];
+  let replacedModelProvider = false;
+  const modelProviderLine = 'model_provider = "codexl"';
 
   for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    const trimmed = line.trim();
+    const trimmed = lines[i].trim();
 
-    if (/^#\s*model_provider\s*=/.test(trimmed)) {
-      lines[i] = 'model_provider = "codexl"';
-      hasGlobalModelProvider = true;
+    // 优先替换被注释掉的默认行（只替换第一处，减少对用户文件的干扰）。
+    if (!replacedModelProvider && /^#\s*model_provider\s*=/.test(trimmed)) {
+      lines[i] = modelProviderLine;
+      replacedModelProvider = true;
       continue;
     }
 
-    if (trimmed.startsWith("#")) {
+    // 替换真实生效的 model_provider 行。
+    if (/^model_provider\s*=/.test(trimmed) && !trimmed.startsWith("#")) {
+      lines[i] = modelProviderLine;
+      replacedModelProvider = true;
       continue;
     }
+  }
 
-    if (/^model_provider\s*=/.test(trimmed)) {
-      lines[i] = 'model_provider = "codexl"';
-      hasGlobalModelProvider = true;
-      continue;
+  if (!replacedModelProvider) {
+    const firstNonEmptyIndex = lines.findIndex((line) => line.trim() !== "");
+    if (firstNonEmptyIndex >= 0) {
+      lines.splice(firstNonEmptyIndex, 0, modelProviderLine, "");
+    } else {
+      lines.push(modelProviderLine, "");
     }
+  }
+
+  // 替换或追加 [model_providers.codexl] 这一段配置。
+  const blockLines = block.split("\n");
+  let insertAfterIndex = -1;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
 
     if (trimmed === "[model_providers.codexl]") {
       let j = i;
 
       while (j < lines.length) {
-        const current = lines[j];
-        const currentTrimmed = current.trim();
+        const currentTrimmed = lines[j].trim();
 
         if (j > i && currentTrimmed.startsWith("[") && !currentTrimmed.startsWith("[[")) {
           break;
@@ -314,26 +386,16 @@ function applyManagedCodexConfig(
         j += 1;
       }
 
+      // 删除旧的 codexl provider 表块，准备写入新的。
       lines.splice(i, j - i);
       insertAfterIndex = i - 1;
       i = j - 1;
     }
   }
 
-  const blockLines = block.split("\n");
   if (insertAfterIndex >= 0) {
     lines.splice(insertAfterIndex + 1, 0, "", ...blockLines);
   } else {
-    if (!hasGlobalModelProvider) {
-      const firstNonEmptyIndex = lines.findIndex((line) => line.trim() !== "");
-
-      if (firstNonEmptyIndex >= 0) {
-        lines.splice(firstNonEmptyIndex, 0, 'model_provider = "codexl"', "");
-      } else {
-        lines.push('model_provider = "codexl"', "");
-      }
-    }
-
     if (lines.length > 0 && lines[lines.length - 1].trim() !== "") {
       lines.push("");
     }
@@ -341,8 +403,7 @@ function applyManagedCodexConfig(
   }
 
   const nextContent = `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
-
-  fs.writeFileSync(targetFile, nextContent, "utf8");
+  writeFileAtomic(targetFile, nextContent);
 
   if (!options?.silent) {
     const config = loadConfig();
@@ -387,6 +448,8 @@ function deactivateManagedCodexConfig(): void {
  */
 async function main(): Promise<void> {
   const program = new Command();
+  // 禁用内置 help 子命令，仅保留 --help / -h 形式。
+  program.addHelpCommand(false);
   getCodexSwHome();
   loadConfig();
 
@@ -416,8 +479,9 @@ async function main(): Promise<void> {
   program
     .command("status")
     .description("刷新并查看所有已录入账号或工作空间的最新额度")
-    .action(async () => {
-      await handleStatus();
+    .option("--no-interactive", "仅输出状态表，不进入交互式切换")
+    .action(async (options: StatusCommandOptions) => {
+      await handleStatus(options);
     });
   program
     .command("start")

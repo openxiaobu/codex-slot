@@ -40,6 +40,28 @@ function formatReset(unixSeconds: number | null): string {
   });
 }
 
+function formatLimitStatus(label: string, resetAt: number | null): string {
+  const remaining = formatRemainingDuration(resetAt);
+
+  if (!remaining) {
+    return label;
+  }
+
+  return `${label}(${remaining})`;
+}
+
+function normalizeBlockReason(reason: string | undefined): string {
+  if (!reason) {
+    return "blocked";
+  }
+
+  if (reason === "five_hour_limited") {
+    return "5h_limited";
+  }
+
+  return reason;
+}
+
 /**
  * 将剩余秒数格式化为紧凑的人类可读文本，便于在状态列中展示熔断剩余时间。
  *
@@ -79,7 +101,7 @@ function formatRemainingDuration(unixSeconds: number | null): string | null {
  * @returns 适合在终端表格中展示的状态文本。
  */
 function formatBlockedStatus(reason: string | undefined, until: number | null | undefined): string {
-  const label = reason ?? "blocked";
+  const label = normalizeBlockReason(reason);
   const remaining = formatRemainingDuration(until ?? null);
 
   if (!remaining) {
@@ -159,9 +181,9 @@ export function renderStatusTable(statuses: AccountRuntimeStatus[]): string {
       } else if (item.localBlockUntil && item.localBlockUntil * 1000 > Date.now()) {
         status = formatBlockedStatus(item.localBlockReason, item.localBlockUntil);
       } else if (item.isWeeklyLimited) {
-        status = "weekly_limited";
+        status = formatLimitStatus("weekly_limited", item.weeklyResetsAt);
       } else if (item.isFiveHourLimited) {
-        status = "5h_limited";
+        status = formatLimitStatus("5h_limited", item.fiveHourResetsAt);
       } else if (item.isAvailable) {
         status = "available";
       } else {

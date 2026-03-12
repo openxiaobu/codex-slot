@@ -8,10 +8,10 @@
 
 - Reuse the official `~/.codex` login state
 - Manage multiple accounts or workspaces as separate slots
-- Fetch the latest usage from the official usage endpoint
+- Refresh and cache the latest usage from the official usage endpoint
 - Expose a local provider endpoint for Codex
 - Apply local block rules for temporary, 5-hour, and weekly limits
-- Automatically switch `~/.codex/config.toml` to the `codexl` provider while the local proxy is running
+- Automatically switch `~/.codex/config.toml` to the `codexl` provider while the local proxy is running (and restore it on stop)
 
 ## Installation
 
@@ -42,6 +42,21 @@ Check latest usage:
 
 ```bash
 codexl status
+```
+
+By default, `status` will:
+
+- Refresh usage for all managed accounts
+- Render a compact table with:
+  - Remaining 5-hour / weekly quotas
+  - Reset times
+  - A status column with local block reasons and countdowns (for example: `5h_limited(2h27m)`)
+- Enter an interactive mode where you can toggle `enabled` for any account by `NAME`
+
+If you only want a non-interactive snapshot of the current state:
+
+```bash
+codexl status --no-interactive
 ```
 
 Start the local proxy:
@@ -81,24 +96,21 @@ Instead it:
 
 ## Managed Codex Config
 
-`codexl start` writes a managed provider block like this:
+`codexl start` writes or updates a provider block like this, based on the current `~/.codexl/config.yaml`:
 
 ```toml
-# >>> codexl managed start >>>
 [model_providers.codexl]
 name = "codexl"
 base_url = "http://127.0.0.1:4389/v1"
 http_headers = { Authorization = "Bearer codexl-defaultkey" }
 wire_api = "responses"
-# <<< codexl managed end <<<
 ```
 
 Behavior:
 
-- If `[model_providers.codexl]` already exists, it is replaced
-- If global `model_provider` exists, it is changed to `codexl`
-- If commented `# model_provider = ...` exists, it is reopened as `model_provider = "codexl"`
-- Global `model` is kept unchanged
+- If global `model_provider` or `# model_provider = ...` exists, it is normalized to `model_provider = "codexl"`
+- If `[model_providers.codexl]` already exists, only that provider block is replaced with the fresh one above
+- Other providers and settings in `config.toml` are left untouched
 - If you start with `--port`, the port is saved to `~/.codexl/config.yaml`
 - `codexl stop` comments out the active `model_provider = "codexl"` line and keeps the rest of the file unchanged
 
