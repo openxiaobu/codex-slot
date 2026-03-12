@@ -25,7 +25,7 @@ English:
 ## Install
 
 ```bash
-npm i -g codexl
+npm i -g @openxiaobu/codexl
 ```
 
 Verify:

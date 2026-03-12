@@ -1,5 +1,11 @@
 # codexl CLI Help
 
+安装：
+
+```bash
+npm i -g @openxiaobu/codexl
+```
+
 ## 命令
 
 ```bash
