@@ -86,46 +86,92 @@ async function handleInteractiveToggle(): Promise<void> {
     return;
   }
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
+  const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: (mode: boolean) => void };
+  readline.emitKeypressEvents(stdin);
+  stdin.setRawMode?.(true);
 
-  const ask = (question: string): Promise<string> =>
-    new Promise((resolve) => {
-      rl.question(question, (answer) => resolve(answer));
-    });
-
-  try {
-    // 允许连续切换多个账号，回车空行退出。
-    // 这里使用账号 NAME 作为标识，与 status 表格中的首列一致。
-    for (;;) {
-      const name = (await ask("输入要切换启用状态的账号 NAME（直接回车退出）：")).trim();
-
-      if (!name) {
-        break;
-      }
-
-      const config = loadConfig();
-      const index = config.accounts.findIndex((item) => item.name === name);
-
-      if (index < 0) {
-        console.log(`未找到 NAME 为 "${name}" 的账号，请检查后重试。`);
-        continue;
-      }
-
-      const account = config.accounts[index];
-      account.enabled = !account.enabled;
-      config.accounts[index] = account;
-      saveConfig(config);
-
-      console.log(
-        `账号 ${account.name} 已${account.enabled ? "启用" : "禁用"}（id=${account.id}，source=${account.codex_home}）。`
-      );
-    }
-  } finally {
-    rl.close();
+  const config = loadConfig();
+  if (config.accounts.length === 0) {
+    console.log("当前没有已录入账号。");
+    stdin.setRawMode?.(false);
+    return;
   }
+
+  // 按名称排序，方便浏览。
+  const accounts = [...config.accounts].sort((a, b) => a.name.localeCompare(b.name));
+  let cursor = 0;
+  let changed = false;
+
+  const render = () => {
+    // 清屏并将光标移动到左上角。
+    process.stdout.write("\x1b[2J\x1b[0f");
+    console.log("空格切换选中账号启用状态，回车确认，q 退出。\n");
+
+    for (let i = 0; i < accounts.length; i += 1) {
+      const account = accounts[i];
+      const prefix = i === cursor ? ">" : " ";
+      const checkbox = account.enabled ? "[x]" : "[ ]";
+      console.log(`${prefix} ${checkbox} ${account.name}  (${account.codex_home})`);
+    }
+  };
+
+  const applyChanges = () => {
+    if (!changed) return;
+
+    const latest = loadConfig();
+    for (const account of accounts) {
+      const index = latest.accounts.findIndex((item) => item.id === account.id);
+      if (index >= 0) {
+        latest.accounts[index] = account;
+      }
+    }
+    saveConfig(latest);
+  };
+
+  render();
+
+  const onKeypress = (_str: string, key: readline.Key) => {
+    if (key.name === "up") {
+      cursor = (cursor - 1 + accounts.length) % accounts.length;
+      render();
+      return;
+    }
+
+    if (key.name === "down") {
+      cursor = (cursor + 1) % accounts.length;
+      render();
+      return;
+    }
+
+    if (key.name === "space") {
+      accounts[cursor].enabled = !accounts[cursor].enabled;
+      changed = true;
+      render();
+      return;
+    }
+
+    if (key.name === "return" || key.name === "enter") {
+      applyChanges();
+      stdin.off("keypress", onKeypress);
+      stdin.setRawMode?.(false);
+      console.log("\n已保存账号启用状态变更。");
+      return;
+    }
+
+    if (key.name === "q" || (key.ctrl && key.name === "c")) {
+      stdin.off("keypress", onKeypress);
+      stdin.setRawMode?.(false);
+      if (changed) {
+        applyChanges();
+        console.log("\n已保存账号启用状态变更。");
+      } else {
+        console.log("\n未做任何变更。");
+      }
+      return;
+    }
+  };
+
+  stdin.on("keypress", onKeypress);
 }
 
 /**

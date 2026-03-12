@@ -44,7 +44,14 @@ codexl import current ~
 codexl status
 ```
 
-默认会在打印状态表后进入交互模式，你可以按照提示输入 `NAME` 来快速启用 / 禁用某个账号；若只想输出当前状态，用：
+默认会在打印状态表后进入交互模式：
+
+- ↑/↓：选择账号
+- 空格：切换启用/禁用（`[x]` 启用，`[ ]` 禁用）
+- 回车：确认并保存
+- `q`：退出
+
+若只想输出当前状态，用：
 
 ```bash
 codexl status --no-interactive
@@ -92,23 +99,21 @@ codexl stop
 
 ## `start` 会写什么配置
 
-`codexl start` 默认会向 `~/.codex/config.toml` 写入：
+`codexl start` 默认会向 `~/.codex/config.toml` 写入或更新 `codexl` provider 配置：
 
 ```toml
-# >>> codexl managed start >>>
 [model_providers.codexl]
 name = "codexl"
 base_url = "http://127.0.0.1:4389/v1"
 http_headers = { Authorization = "Bearer codexl-defaultkey" }
 wire_api = "responses"
-# <<< codexl managed end <<<
 ```
 
 规则：
 
-- 如果已有 `[model_providers.codexl]`，会直接替换
-- 如果全局 `model_provider` 已存在，会改成 `codexl`
-- 如果只有注释的 `# model_provider = ...`，也会被打开并改成 `codexl`
+- 如果全局 `model_provider` 或注释的 `# model_provider = ...` 已存在，会统一改成 `model_provider = "codexl"`
+- 如果已有 `[model_providers.codexl]`，只替换该 provider 块
+- `config.toml` 里其他 provider 和配置保持不变
 - 全局 `model` 不会改
 - 如果通过 `codexl start --port <端口>` 指定端口，会把端口写入 `~/.codexl/config.yaml`
 - `codexl stop` 只会把当前生效的 `model_provider = "codexl"` 注释掉，其他配置保持不变
