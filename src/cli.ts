@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { Command } from "commander";
+import type { AccountRuntimeStatus } from "./types";
 import {
   cloneCodexAuthState,
   registerManagedAccount,
@@ -19,6 +20,7 @@ import {
   saveConfig
 } from "./config";
 import { loginManagedAccount } from "./login";
+import { pickBestAccount } from "./scheduler";
 import { startServer } from "./server";
 import {
 } from "./state";
@@ -62,25 +64,38 @@ async function handleStatus(options?: StatusCommandOptions): Promise<void> {
   await refreshAllAccountUsage();
 
   const statuses = collectAccountStatuses();
-  console.log(renderStatusTable(statuses));
+  const interactive = options?.interactive ?? true;
 
+  if (interactive) {
+    await handleInteractiveToggle(statuses);
+    return;
+  }
+
+  const selected = pickBestAccount();
+  const displayStatuses = statuses.map((item) => ({
+    ...item,
+    name: item.id === selected?.account.id ? `${item.name}*` : item.name
+  }));
   const available = statuses.filter((item) => item.isAvailable).length;
   const fiveHourLimited = statuses.filter(
     (item) => item.isFiveHourLimited && !item.isWeeklyLimited
   ).length;
   const weeklyLimited = statuses.filter((item) => item.isWeeklyLimited).length;
 
+  console.log(renderStatusTable(displayStatuses));
   console.log("");
   console.log(`available=${available} 5h_limited=${fiveHourLimited} weekly_limited=${weeklyLimited}`);
-
-  const interactive = options?.interactive ?? true;
-
-  if (interactive) {
-    await handleInteractiveToggle();
-  }
+  console.log(`selected=${selected ? selected.account.name : "none"}`);
 }
 
-async function handleInteractiveToggle(): Promise<void> {
+/**
+ * 进入账号启用状态的交互式切换界面，并在用户确认退出后恢复终端状态。
+ *
+ * @param initialStatuses 进入交互前刚刷新的账号状态快照，用于首屏复用同一块展示区域。
+ * @returns Promise，在用户按下 `Enter`、`q` 或 `Ctrl+C` 退出交互后完成。
+ * @throws 无显式抛出；终端读写异常将沿调用链透出。
+ */
+async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[]): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     console.log("当前环境不支持交互式操作，请直接编辑配置文件或使用 --no-interactive 选项。");
     return;
@@ -89,7 +104,6 @@ async function handleInteractiveToggle(): Promise<void> {
   const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: (mode: boolean) => void };
   readline.emitKeypressEvents(stdin);
   stdin.setRawMode?.(true);
-  stdin.resume();
 
   const config = loadConfig();
   if (config.accounts.length === 0) {
@@ -104,89 +118,130 @@ async function handleInteractiveToggle(): Promise<void> {
   let changed = false;
   let renderedLines = 0;
 
-  const render = () => {
-    const lines: string[] = [];
-    lines.push("空格切换选中账号启用状态，Enter / q 退出：");
+  return await new Promise<void>((resolve) => {
+    let closed = false;
 
-    for (let i = 0; i < accounts.length; i += 1) {
-      const account = accounts[i];
-      const prefix = i === cursor ? ">" : " ";
-      const checkbox = account.enabled ? "[x]" : "[ ]";
-      lines.push(`${prefix} ${checkbox} ${account.name}  (${account.codex_home})`);
-    }
+    const render = () => {
+      const latestStatuses = collectAccountStatuses();
+      const selected = pickBestAccount();
+      const statusSource = changed ? latestStatuses : (initialStatuses ?? latestStatuses);
+      const displayStatuses = statusSource.map((item) => ({
+        ...item,
+        name: item.id === selected?.account.id ? `${item.name}*` : item.name
+      }));
+      const available = statusSource.filter((item) => item.isAvailable).length;
+      const fiveHourLimited = statusSource.filter(
+        (item) => item.isFiveHourLimited && !item.isWeeklyLimited
+      ).length;
+      const weeklyLimited = statusSource.filter((item) => item.isWeeklyLimited).length;
+      const autoSelectedId = selected?.account.id ?? null;
+      const lines: string[] = [
+        renderStatusTable(displayStatuses),
+        "",
+        `available=${available} 5h_limited=${fiveHourLimited} weekly_limited=${weeklyLimited}`,
+        `selected=${selected ? selected.account.name : "none"}`,
+        "",
+        "空格切换选中账号启用状态，Enter / q 退出："
+      ];
 
-    // 首次渲染时先换一行，避免粘在上一行输出后面。
-    if (renderedLines === 0) {
+      for (let i = 0; i < accounts.length; i += 1) {
+        const account = accounts[i];
+        const checkbox = account.enabled ? "[x]" : "[ ]";
+        const displayName = account.id === autoSelectedId ? `${account.name}*` : account.name;
+        const cursorSuffix = i === cursor ? "  <" : "";
+
+        lines.push(`${checkbox} ${displayName}  (${account.codex_home})${cursorSuffix}`);
+      }
+
+      // 首次渲染时先换一行，避免粘在上一行输出后面。
+      if (renderedLines === 0) {
+        process.stdout.write("\n");
+      } else {
+        // 将光标移动到上一轮渲染块的起始行，保证整块内容原地刷新。
+        process.stdout.write(`\x1b[${renderedLines}A`);
+      }
+
+      renderedLines = lines.length;
+      process.stdout.write("\x1b[J");
+      process.stdout.write(lines.join("\n"));
       process.stdout.write("\n");
-    } else {
-      // 将光标移动到上一轮渲染块的起始行。
-      process.stdout.write(`\x1b[${renderedLines}A`);
-    }
+    };
 
-    renderedLines = lines.length;
-    process.stdout.write(lines.join("\n"));
-    process.stdout.write("\n");
-  };
-
-  const applyChanges = () => {
-    if (!changed) return;
-
-    const latest = loadConfig();
-    for (const account of accounts) {
-      const index = latest.accounts.findIndex((item) => item.id === account.id);
-      if (index >= 0) {
-        latest.accounts[index] = account;
+    const applyChanges = () => {
+      if (!changed) {
+        return;
       }
-    }
-    saveConfig(latest);
-    changed = false;
-  };
 
-  render();
+      const latest = loadConfig();
+      for (const account of accounts) {
+        const index = latest.accounts.findIndex((item) => item.id === account.id);
+        if (index >= 0) {
+          latest.accounts[index] = account;
+        }
+      }
+      saveConfig(latest);
+      changed = false;
+      initialStatuses = collectAccountStatuses();
+    };
 
-  const onKeypress = (_str: string, key: readline.Key) => {
-    if (key.name === "up") {
-      cursor = (cursor - 1 + accounts.length) % accounts.length;
-      render();
-      return;
-    }
+    const exitInteractive = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
 
-    if (key.name === "down") {
-      cursor = (cursor + 1) % accounts.length;
-      render();
-      return;
-    }
-
-    if (key.name === "space") {
-      accounts[cursor].enabled = !accounts[cursor].enabled;
-      changed = true;
+      // 退出前先持久化本轮勾选变更，避免用户误以为切换未生效。
       applyChanges();
-      render();
-      return;
-    }
 
-    if (key.name === "return" || key.name === "enter") {
-      if (changed) {
-        applyChanges();
-      }
       stdin.off("keypress", onKeypress);
       stdin.setRawMode?.(false);
-      console.log("\n已退出账号启用状态编辑。");
-      return;
-    }
+      stdin.pause();
 
-    if (key.name === "q" || (key.ctrl && key.name === "c")) {
-      if (changed) {
-        applyChanges();
+      // 将光标移回交互块顶部并清空，确保命令行提示符直接回到正常位置。
+      if (renderedLines > 0) {
+        process.stdout.write(`\x1b[${renderedLines}A`);
+        process.stdout.write("\x1b[J");
       }
-      stdin.off("keypress", onKeypress);
-      stdin.setRawMode?.(false);
-      console.log("\n已退出账号启用状态编辑。");
-      return;
-    }
-  };
 
-  stdin.on("keypress", onKeypress);
+      console.log("已退出账号启用状态编辑。");
+      resolve();
+    };
+
+    const onKeypress = (_str: string, key: readline.Key) => {
+      if (key.name === "up") {
+        cursor = (cursor - 1 + accounts.length) % accounts.length;
+        render();
+        return;
+      }
+
+      if (key.name === "down") {
+        cursor = (cursor + 1) % accounts.length;
+        render();
+        return;
+      }
+
+      if (key.name === "space") {
+        // 空格直接切换当前选中账号的启用状态，并立即写回配置。
+        accounts[cursor].enabled = !accounts[cursor].enabled;
+        changed = true;
+        applyChanges();
+        render();
+        return;
+      }
+
+      if (key.name === "return" || key.name === "enter") {
+        exitInteractive();
+        return;
+      }
+
+      if (key.name === "q" || (key.ctrl && key.name === "c")) {
+        exitInteractive();
+      }
+    };
+
+    render();
+    stdin.on("keypress", onKeypress);
+  });
 }
 
 /**

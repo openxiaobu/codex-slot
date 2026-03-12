@@ -1,6 +1,6 @@
 import { loadConfig } from "./config";
 import { collectAccountStatuses } from "./status";
-import type { ManagedAccount, SchedulerPick } from "./types";
+import type { AccountRuntimeStatus, ManagedAccount, SchedulerPick } from "./types";
 
 function nextResetWeight(resetAt: number | null): number {
   if (!resetAt) {
@@ -9,6 +9,28 @@ function nextResetWeight(resetAt: number | null): number {
 
   const diff = resetAt * 1000 - Date.now();
   return diff > 0 ? diff : Number.MAX_SAFE_INTEGER;
+}
+
+/**
+ * 判断账号当前是否仅命中可忽略的短期本地熔断。
+ *
+ * 这类熔断通常由瞬时网络抖动、上游 5xx 或短暂 token 刷新失败触发，
+ * 当系统只剩一个可调度账号时，不应因此立刻把它排除掉。
+ *
+ * @param status 账号运行时状态。
+ * @returns `true` 表示仅存在可回退的短期本地熔断；否则返回 `false`。
+ */
+function isSoftLocalBlocked(status: AccountRuntimeStatus): boolean {
+  if (!status.localBlockUntil || status.localBlockUntil * 1000 <= Date.now()) {
+    return false;
+  }
+
+  return [
+    "request_failed",
+    "upstream_5xx",
+    "temporary_5m_limit",
+    "token_refresh_failed"
+  ].includes(status.localBlockReason ?? "");
 }
 
 /**
@@ -34,6 +56,9 @@ export function listCandidateAccounts(): SchedulerPick[] {
   const config = loadConfig();
   const statuses = collectAccountStatuses();
   const accountMap = new Map<string, ManagedAccount>(config.accounts.map((item) => [item.id, item]));
+  const eligible = statuses.filter(
+    (item) => item.enabled && item.exists && !item.isFiveHourLimited && !item.isWeeklyLimited
+  );
 
   const available = statuses
     .filter((item) => item.isAvailable)
@@ -51,7 +76,14 @@ export function listCandidateAccounts(): SchedulerPick[] {
       return nextResetWeight(left.fiveHourResetsAt) - nextResetWeight(right.fiveHourResetsAt);
     });
 
-  return available
+  const ranked = available.length > 0 ? available : [];
+
+  // 当系统只剩一个具备真实凭据且未命中额度限制的账号时，允许忽略短期本地熔断继续兜底尝试。
+  if (ranked.length === 0 && eligible.length === 1 && isSoftLocalBlocked(eligible[0])) {
+    ranked.push(eligible[0]);
+  }
+
+  return ranked
     .map((winner) => {
       const account = accountMap.get(winner.id);
       if (!account) {
@@ -61,7 +93,10 @@ export function listCandidateAccounts(): SchedulerPick[] {
       return {
         account,
         status: winner,
-        reason: "优先选择 5 小时窗口剩余额度最高且当前可用的账号"
+        reason:
+          winner.isAvailable
+            ? "优先选择 5 小时窗口剩余额度最高且当前可用的账号"
+            : "当前仅剩一个可调度账号，忽略短期本地熔断后继续兜底尝试"
       };
     })
     .filter((item): item is SchedulerPick => item !== null);
