@@ -37,6 +37,10 @@ npm i -g openxiaobu/codexl
 codexl --help
 ```
 
+说明：
+
+- GitHub 安装直接使用仓库中已构建的 `dist/`，不依赖本地 TypeScript。
+
 导入当前默认 `codex` 登录态：
 
 ```bash
