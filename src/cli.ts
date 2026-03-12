@@ -101,16 +101,30 @@ async function handleInteractiveToggle(): Promise<void> {
   const accounts = [...config.accounts].sort((a, b) => a.name.localeCompare(b.name));
   let cursor = 0;
   let changed = false;
+  let renderedLines = 0;
 
   const render = () => {
-    console.log("\n空格切换选中账号启用状态，回车确认，q 退出：\n");
+    const lines: string[] = [];
+    lines.push("空格切换选中账号启用状态，回车确认，q 退出：");
 
     for (let i = 0; i < accounts.length; i += 1) {
       const account = accounts[i];
       const prefix = i === cursor ? ">" : " ";
       const checkbox = account.enabled ? "[x]" : "[ ]";
-      console.log(`${prefix} ${checkbox} ${account.name}  (${account.codex_home})`);
+      lines.push(`${prefix} ${checkbox} ${account.name}  (${account.codex_home})`);
     }
+
+    // 首次渲染时先换一行，避免粘在上一行输出后面。
+    if (renderedLines === 0) {
+      process.stdout.write("\n");
+    } else {
+      // 将光标移动到上一轮渲染块的起始行。
+      process.stdout.write(`\x1b[${renderedLines}A`);
+    }
+
+    renderedLines = lines.length;
+    process.stdout.write(lines.join("\n"));
+    process.stdout.write("\n");
   };
 
   const applyChanges = () => {
