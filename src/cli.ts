@@ -71,6 +71,48 @@ function countRenderedLines(lines: string[]): number {
 }
 
 /**
+ * 计算交互式状态面板的初始光标位置。
+ *
+ * 业务含义：
+ * 1. 优先将光标定位到当前自动调度选中的账号，确保首屏焦点与 `selected=` 一致。
+ * 2. 若当前没有自动选中账号，则回退到首个可用账号，方便直接切换。
+ * 3. 若仍不存在可用账号，则回退到首个已启用账号；最后兜底为列表第一项。
+ *
+ * @param accounts 已按展示顺序排好的账号列表；不能为空，元素需包含启用状态与账号 id。
+ * @param statuses 当前账号运行时状态快照；用于判断账号是否可用。
+ * @returns number，初始光标所在的数组下标；当未命中任何候选时返回 `0`。
+ * @throws 无显式抛出。
+ */
+function resolveInitialCursorIndex(
+  accounts: Array<{ id: string; enabled: boolean }>,
+  statuses: AccountRuntimeStatus[]
+): number {
+  const selected = pickBestAccount();
+  if (selected) {
+    const selectedIndex = accounts.findIndex((account) => account.id === selected.account.id);
+    if (selectedIndex >= 0) {
+      return selectedIndex;
+    }
+  }
+
+  const statusById = new Map(statuses.map((item) => [item.id, item]));
+
+  // 当前有可用账号时，优先聚焦到第一个可用账号，减少用户额外移动光标的成本。
+  const availableIndex = accounts.findIndex((account) => statusById.get(account.id)?.isAvailable);
+  if (availableIndex >= 0) {
+    return availableIndex;
+  }
+
+  // 若所有账号都不可用，至少默认落在首个已启用账号上，避免首屏停在明显不可操作的禁用项。
+  const enabledIndex = accounts.findIndex((account) => account.enabled);
+  if (enabledIndex >= 0) {
+    return enabledIndex;
+  }
+
+  return 0;
+}
+
+/**
  * 刷新所有已录入账号的远端额度，并输出最新状态表格。
  *
  * @returns Promise，无返回值。
@@ -129,7 +171,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
 
   // 按名称排序，方便浏览。
   const accounts = [...config.accounts].sort((a, b) => a.name.localeCompare(b.name));
-  let cursor = 0;
+  let cursor = resolveInitialCursorIndex(accounts, initialStatuses ?? collectAccountStatuses());
   let changed = false;
   let renderedLines = 0;
 
@@ -237,14 +279,22 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
 
     const onKeypress = (_str: string, key: readline.Key) => {
       if (key.name === "up") {
-        cursor = (cursor - 1 + accounts.length) % accounts.length;
-        render();
+        // 顶部账号继续按上键时保持当前位置，避免交互焦点在首尾之间循环跳转。
+        const nextCursor = Math.max(0, cursor - 1);
+        if (nextCursor !== cursor) {
+          cursor = nextCursor;
+          render();
+        }
         return;
       }
 
       if (key.name === "down") {
-        cursor = (cursor + 1) % accounts.length;
-        render();
+        // 底部账号继续按下键时保持当前位置，避免用户误以为光标异常回绕。
+        const nextCursor = Math.min(accounts.length - 1, cursor + 1);
+        if (nextCursor !== cursor) {
+          cursor = nextCursor;
+          render();
+        }
         return;
       }
 
