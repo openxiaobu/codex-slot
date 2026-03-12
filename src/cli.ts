@@ -163,10 +163,12 @@ async function handleInteractiveToggle(): Promise<void> {
     }
 
     if (key.name === "return" || key.name === "enter") {
-      applyChanges();
-      stdin.off("keypress", onKeypress);
-      stdin.setRawMode?.(false);
-      console.log("\n已保存账号启用状态变更。");
+      if (changed) {
+        applyChanges();
+        changed = false;
+        render();
+        console.log("\n已保存账号启用状态变更（按 q 退出）。");
+      }
       return;
     }
 
