@@ -64,6 +64,7 @@ codexl status
 
 ```bash
 codexl start
+codexl start --port 4399
 ```
 
 获取当前代理地址和 key：
@@ -85,7 +86,7 @@ codexl add <name>
 codexl del <name>
 codexl import <name> [HOME]
 codexl status
-codexl start
+codexl start [--port 端口]
 codexl stop
 codexl get
 codexl config [codexPath]
@@ -113,9 +114,6 @@ codexl config [codexPath]
 
 ```toml
 # >>> codexl managed start >>>
-model_provider = "codexl"
-model = "gpt-5-codex"
-
 [model_providers.codexl]
 name = "codexl"
 base_url = "http://127.0.0.1:4389/v1"
@@ -124,13 +122,21 @@ wire_api = "responses"
 # <<< codexl managed end <<<
 ```
 
-如果已有未注释的旧配置：
+如果已有旧的 `[model_providers.codexl]` 配置，`codexl config` 会直接替换成新的托管块。
 
-- 旧的 `model_provider`
-- 旧的 `model`
-- 旧的 `[model_providers.codexl]`
+如果已经存在全局 `model_provider`，`codexl config` 会将其改成 `codexl`。
 
-`codexl config` 会先注释旧值，再把新的托管块插到附近。
+如果存在被注释的 `# model_provider = ...`，`codexl config` 也会直接打开并改成 `model_provider = "codexl"`。
+
+全局 `model` 不会被修改。
+
+如果原来没有全局 `model_provider`，`codexl config` 会自动补上一行：
+
+```toml
+model_provider = "codexl"
+```
+
+如果你通过 `codexl start --port <端口>` 指定端口，这个端口会写回 `~/.codexl/config.yaml`，后续 `codexl get` 和 `codexl config` 会使用该端口。
 
 ## Data Directory
 

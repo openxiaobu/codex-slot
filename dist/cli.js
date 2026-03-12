@@ -97,13 +97,21 @@ function getRunningPid() {
  * @throws 当服务已在运行或子进程启动失败时抛出异常。
  */
 async function handleStart(portOverride) {
+    const config = (0, config_1.loadConfig)();
+    const port = portOverride ? Number(portOverride) : config.server.port;
+    if (portOverride) {
+        config.server.port = port;
+        (0, config_1.saveConfig)(config);
+    }
     const runningPid = getRunningPid();
     if (runningPid) {
         console.log(`服务已在运行，PID=${runningPid}`);
+        if (portOverride) {
+            console.log(`已将新端口写入配置: ${port}`);
+            console.log("请先执行 codexl stop，再执行 codexl start 使新端口生效。");
+        }
         return;
     }
-    const config = (0, config_1.loadConfig)();
-    const port = portOverride ? Number(portOverride) : config.server.port;
     const logPath = (0, config_1.getServiceLogPath)();
     const logFd = node_fs_1.default.openSync(logPath, "a");
     const child = (0, node_child_process_1.spawn)(process.execPath, [__filename.replace(/cli\.js$/, "serve.js"), "--port", String(port)], {
@@ -141,12 +149,6 @@ function handleGetConfig() {
     console.log(`base_url=${`http://${config.server.host}:${config.server.port}/v1`}`);
     console.log(`api_key=${config.server.api_key}`);
 }
-function commentIfNeeded(line) {
-    if (!line.trim() || line.trimStart().startsWith("#")) {
-        return line;
-    }
-    return `# ${line}`;
-}
 function escapeRegExp(input) {
     return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -164,9 +166,6 @@ function handleConfig(targetPathOrDir) {
     const endMarker = "# <<< codexl managed end <<<";
     const block = [
         startMarker,
-        'model_provider = "codexl"',
-        'model = "gpt-5-codex"',
-        "",
         "[model_providers.codexl]",
         'name = "codexl"',
         `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
@@ -184,15 +183,21 @@ function handleConfig(targetPathOrDir) {
     const managedBlockPattern = new RegExp(`${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}\\n?`, "g");
     const lines = original.replace(managedBlockPattern, "").split(/\r?\n/);
     let insertAfterIndex = -1;
+    let hasGlobalModelProvider = false;
     for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
         const trimmed = line.trim();
+        if (/^#\s*model_provider\s*=/.test(trimmed)) {
+            lines[i] = 'model_provider = "codexl"';
+            hasGlobalModelProvider = true;
+            continue;
+        }
         if (trimmed.startsWith("#")) {
             continue;
         }
-        if (/^(model_provider|model)\s*=/.test(trimmed)) {
-            lines[i] = commentIfNeeded(line);
-            insertAfterIndex = i;
+        if (/^model_provider\s*=/.test(trimmed)) {
+            lines[i] = 'model_provider = "codexl"';
+            hasGlobalModelProvider = true;
             continue;
         }
         if (trimmed === "[model_providers.codexl]") {
@@ -203,10 +208,11 @@ function handleConfig(targetPathOrDir) {
                 if (j > i && currentTrimmed.startsWith("[") && !currentTrimmed.startsWith("[[")) {
                     break;
                 }
-                lines[j] = commentIfNeeded(current);
                 insertAfterIndex = j;
                 j += 1;
             }
+            lines.splice(i, j - i);
+            insertAfterIndex = i - 1;
             i = j - 1;
         }
     }
@@ -215,6 +221,15 @@ function handleConfig(targetPathOrDir) {
         lines.splice(insertAfterIndex + 1, 0, "", ...blockLines);
     }
     else {
+        if (!hasGlobalModelProvider) {
+            const firstNonEmptyIndex = lines.findIndex((line) => line.trim() !== "");
+            if (firstNonEmptyIndex >= 0) {
+                lines.splice(firstNonEmptyIndex, 0, 'model_provider = "codexl"', "");
+            }
+            else {
+                lines.push('model_provider = "codexl"', "");
+            }
+        }
         if (lines.length > 0 && lines[lines.length - 1].trim() !== "") {
             lines.push("");
         }
@@ -225,6 +240,7 @@ function handleConfig(targetPathOrDir) {
     console.log(`已写入: ${targetFile}`);
     console.log(`base_url=http://${config.server.host}:${config.server.port}/v1`);
     console.log(`api_key=${config.server.api_key}`);
+    console.log('提示: 已写入 codexl provider；如果原来存在 model_provider，则已切换为 codexl；model 保持不变。');
 }
 /**
  * CLI 主入口，负责命令注册与执行。

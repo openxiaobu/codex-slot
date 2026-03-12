@@ -7,7 +7,7 @@ codexl add <名字>
 codexl del <名字>
 codexl import <名字> [HOME]
 codexl status
-codexl start
+codexl start [--port 端口]
 codexl stop
 codexl get
 codexl config [codex配置目录]
@@ -36,6 +36,8 @@ codexl config [codex配置目录]
 
 - `codexl start`
   - 后台启动本地代理服务
+  - 可选 `--port` 指定端口
+  - 指定后会持久化到 `~/.codexl/config.yaml`
 
 - `codexl stop`
   - 停止后台代理服务
@@ -49,6 +51,10 @@ codexl config [codex配置目录]
   - 默认写入 `~/.codex/config.toml`
   - 也可以传入目录或完整 toml 文件路径
   - 直接把固定 `Authorization` 头写进配置，不依赖环境变量
+  - 如果已存在全局 `model_provider`，会改成 `codexl`
+  - 如果 `model_provider` 是注释状态，也会直接打开并改成 `codexl`
+  - 不会修改当前全局 `model`
+  - 如果原来没有全局 `model_provider`，会自动补一行 `model_provider = "codexl"`
 
 ## 常用流程
 

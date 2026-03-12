@@ -9,7 +9,8 @@ import {
   getCodexSwHome,
   getPidPath,
   getServiceLogPath,
-  loadConfig
+  loadConfig,
+  saveConfig
 } from "./config";
 import { loginManagedAccount } from "./login";
 import { startServer } from "./server";
@@ -113,15 +114,24 @@ function getRunningPid(): number | null {
  * @throws 当服务已在运行或子进程启动失败时抛出异常。
  */
 async function handleStart(portOverride?: string): Promise<void> {
+  const config = loadConfig();
+  const port = portOverride ? Number(portOverride) : config.server.port;
+
+  if (portOverride) {
+    config.server.port = port;
+    saveConfig(config);
+  }
+
   const runningPid = getRunningPid();
 
   if (runningPid) {
     console.log(`服务已在运行，PID=${runningPid}`);
+    if (portOverride) {
+      console.log(`已将新端口写入配置: ${port}`);
+      console.log("请先执行 codexl stop，再执行 codexl start 使新端口生效。");
+    }
     return;
   }
-
-  const config = loadConfig();
-  const port = portOverride ? Number(portOverride) : config.server.port;
   const logPath = getServiceLogPath();
   const logFd = fs.openSync(logPath, "a");
   const child = spawn(process.execPath, [__filename.replace(/cli\.js$/, "serve.js"), "--port", String(port)], {
@@ -167,14 +177,6 @@ function handleGetConfig(): void {
   console.log(`api_key=${config.server.api_key}`);
 }
 
-function commentIfNeeded(line: string): string {
-  if (!line.trim() || line.trimStart().startsWith("#")) {
-    return line;
-  }
-
-  return `# ${line}`;
-}
-
 function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -193,9 +195,6 @@ function handleConfig(targetPathOrDir?: string): void {
   const endMarker = "# <<< codexl managed end <<<";
   const block = [
     startMarker,
-    'model_provider = "codexl"',
-    'model = "gpt-5-codex"',
-    "",
     "[model_providers.codexl]",
     'name = "codexl"',
     `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
@@ -217,18 +216,25 @@ function handleConfig(targetPathOrDir?: string): void {
   );
   const lines = original.replace(managedBlockPattern, "").split(/\r?\n/);
   let insertAfterIndex = -1;
+  let hasGlobalModelProvider = false;
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     const trimmed = line.trim();
 
+    if (/^#\s*model_provider\s*=/.test(trimmed)) {
+      lines[i] = 'model_provider = "codexl"';
+      hasGlobalModelProvider = true;
+      continue;
+    }
+
     if (trimmed.startsWith("#")) {
       continue;
     }
 
-    if (/^(model_provider|model)\s*=/.test(trimmed)) {
-      lines[i] = commentIfNeeded(line);
-      insertAfterIndex = i;
+    if (/^model_provider\s*=/.test(trimmed)) {
+      lines[i] = 'model_provider = "codexl"';
+      hasGlobalModelProvider = true;
       continue;
     }
 
@@ -243,11 +249,12 @@ function handleConfig(targetPathOrDir?: string): void {
           break;
         }
 
-        lines[j] = commentIfNeeded(current);
         insertAfterIndex = j;
         j += 1;
       }
 
+      lines.splice(i, j - i);
+      insertAfterIndex = i - 1;
       i = j - 1;
     }
   }
@@ -256,6 +263,16 @@ function handleConfig(targetPathOrDir?: string): void {
   if (insertAfterIndex >= 0) {
     lines.splice(insertAfterIndex + 1, 0, "", ...blockLines);
   } else {
+    if (!hasGlobalModelProvider) {
+      const firstNonEmptyIndex = lines.findIndex((line) => line.trim() !== "");
+
+      if (firstNonEmptyIndex >= 0) {
+        lines.splice(firstNonEmptyIndex, 0, 'model_provider = "codexl"', "");
+      } else {
+        lines.push('model_provider = "codexl"', "");
+      }
+    }
+
     if (lines.length > 0 && lines[lines.length - 1].trim() !== "") {
       lines.push("");
     }
@@ -269,6 +286,7 @@ function handleConfig(targetPathOrDir?: string): void {
   console.log(`已写入: ${targetFile}`);
   console.log(`base_url=http://${config.server.host}:${config.server.port}/v1`);
   console.log(`api_key=${config.server.api_key}`);
+  console.log('提示: 已写入 codexl provider；如果原来存在 model_provider，则已切换为 codexl；model 保持不变。');
 }
 
 /**
