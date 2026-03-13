@@ -163,9 +163,9 @@ test("默认启动使用 4399，并将端口与 api_key 同步到单一 provider
     assert.match(codexConfig, /base_url = "http:\/\/127\.0\.0\.1:4399\/v1"/);
     assert.match(
       codexConfig,
-      new RegExp(`http_headers = \\{ Authorization = "Bearer ${cslotConfig.server.api_key}" \\}`)
+      new RegExp(`experimental_bearer_token = "${cslotConfig.server.api_key}"`)
     );
-    assert.doesNotMatch(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
+    assert.doesNotMatch(codexConfig, /http_headers/);
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -189,8 +189,9 @@ test("当 4399 被占用时自动顺延，并把实际端口同步写回配置",
     assert.match(codexConfig, /base_url = "http:\/\/127\.0\.0\.1:4400\/v1"/);
     assert.match(
       codexConfig,
-      new RegExp(`http_headers = \\{ Authorization = "Bearer ${cslotConfig.server.api_key}" \\}`)
+      new RegExp(`experimental_bearer_token = "${cslotConfig.server.api_key}"`)
     );
+    assert.doesNotMatch(codexConfig, /http_headers/);
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
     await closeServer(occupiedServer);

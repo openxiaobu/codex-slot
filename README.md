@@ -130,8 +130,8 @@ Instead it:
 [model_providers.cslot]
 name = "cslot"
 base_url = "http://127.0.0.1:4399/v1"
-http_headers = { Authorization = "Bearer <your-local-api-key>" }
 wire_api = "responses"
+experimental_bearer_token = "<your-local-api-key>"
 ```
 
 Behavior:

@@ -129,8 +129,8 @@ codex-slot stop
 [model_providers.cslot]
 name = "cslot"
 base_url = "http://127.0.0.1:4399/v1"
-http_headers = { Authorization = "Bearer <你的本地-api-key>" }
 wire_api = "responses"
+experimental_bearer_token = "<你的本地-api-key>"
 ```
 
 规则：

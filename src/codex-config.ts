@@ -76,7 +76,7 @@ function buildManagedProviderBlock(eol: string, config: CslotConfig): string {
     'name = "cslot"',
     `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
     'wire_api = "responses"',
-    `http_headers = { Authorization = "Bearer ${config.server.api_key}" }`,
+    `experimental_bearer_token = "${config.server.api_key}"`,
     PROVIDER_BLOCK_END_MARKER
   ].join(eol);
 }
