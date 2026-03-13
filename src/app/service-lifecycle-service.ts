@@ -2,9 +2,24 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { request } from "undici";
 import { applyManagedCodexConfig, deactivateManagedCodexConfig } from "../codex-config";
 import { parsePort } from "../cli-helpers";
 import { getPidPath, getServiceLogPath, loadConfig, rotateServerApiKey, saveConfig } from "../config";
+
+const STARTUP_POLL_INTERVAL_MS = 100;
+const STARTUP_TIMEOUT_MS = 5000;
+
+/**
+ * 休眠指定毫秒数，供启动轮询流程复用。
+ *
+ * @param delayMs 等待时长，单位毫秒。
+ * @returns Promise，等待结束后返回。
+ * @throws 无显式抛出。
+ */
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
 
 /**
  * 判断后台服务当前是否在运行。
@@ -83,22 +98,108 @@ function isPortAvailable(host: string, port: number): Promise<boolean> {
 }
 
 /**
+ * 通过健康检查探测后台服务是否已经完成启动。
+ *
+ * @param host 本地监听地址。
+ * @param port 期望监听的端口。
+ * @returns Promise，健康检查通过时返回 `true`，否则返回 `false`。
+ * @throws 无显式抛出。
+ */
+async function isManagedServiceHealthy(
+  host: string,
+  port: number
+): Promise<boolean> {
+  try {
+    const response = await request(`http://${host}:${port}/health`, {
+      method: "GET",
+      headersTimeout: 500,
+      bodyTimeout: 500
+    });
+
+    if (response.statusCode !== 200) {
+      return false;
+    }
+
+    const payload = (await response.body.json()) as { ok?: boolean };
+    return payload.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 等待后台服务真正进入可用状态，避免“配置已写入但服务未成功启动”的假成功状态。
+ *
+ * @param host 本地监听地址。
+ * @param port 期望监听的端口。
+ * @param pid 子进程 PID。
+ * @param timeoutMs 等待超时时间，单位毫秒。
+ * @returns Promise，健康检查通过时正常返回。
+ * @throws 当子进程提前退出、超时或服务始终未就绪时抛出异常。
+ */
+async function waitForManagedServiceReady(
+  host: string,
+  port: number,
+  pid: number,
+  timeoutMs = STARTUP_TIMEOUT_MS
+): Promise<void> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      throw new Error(`后台服务启动失败，进程已退出，PID=${pid}`);
+    }
+
+    // 只有健康检查通过，才认为本地代理已经可安全对外服务。
+    if (await isManagedServiceHealthy(host, port)) {
+      return;
+    }
+
+    await sleep(STARTUP_POLL_INTERVAL_MS);
+  }
+
+  throw new Error(`后台服务启动超时，${host}:${port} 未在 ${timeoutMs}ms 内通过健康检查`);
+}
+
+/**
+ * 在启动失败时终止残留子进程，并恢复启动前的本地配置与 Codex 接管状态。
+ *
+ * @param pid 可能已创建的子进程 PID。
+ * @param previousConfig 启动前的原始配置快照。
+ * @returns 无返回值。
+ * @throws 无显式抛出。
+ */
+function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<typeof loadConfig>): void {
+  if (pid && Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // 子进程可能已经自行退出，此处按幂等清理处理。
+    }
+  }
+
+  fs.rmSync(getPidPath(), { force: true });
+  saveConfig(previousConfig);
+  deactivateManagedCodexConfig();
+}
+
+/**
  * 为后台服务挑选最终启动端口。
  *
  * 规则：
  * 1. 若用户显式指定 `--port`，则严格使用该端口，冲突时直接报错。
  * 2. 若未显式指定端口，则优先使用 4399。
- * 3. 若默认候选端口冲突，则从候选端口开始向上查找下一个可用端口。
+ * 3. 若默认候选端口冲突，则从 4399 开始向上查找下一个可用端口。
  *
  * @param host 监听地址。
- * @param currentPort 当前配置中的端口。
  * @param portOverride 用户显式指定的端口文本。
  * @returns Promise，成功时返回最终端口与是否发生自动切换。
  * @throws 当显式指定端口冲突或找不到可用端口时抛出异常。
  */
 async function resolveStartPort(
   host: string,
-  currentPort: number,
   portOverride?: string
 ): Promise<{ port: number; autoSwitched: boolean }> {
   if (portOverride) {
@@ -110,7 +211,7 @@ async function resolveStartPort(
     return { port, autoSwitched: false };
   }
 
-  const preferredPort = currentPort === 4389 ? 4399 : currentPort;
+  const preferredPort = 4399;
 
   for (let candidate = preferredPort; candidate < preferredPort + 50; candidate += 1) {
     if (await isPortAvailable(host, candidate)) {
@@ -140,45 +241,29 @@ export async function startManagedService(portOverride?: string): Promise<{
   apiKeyRotated: boolean;
 }> {
   const config = loadConfig();
-  const { port, autoSwitched } = await resolveStartPort(
-    config.server.host,
-    config.server.port,
-    portOverride
-  );
-  const hasExplicitPortOverride = typeof portOverride === "string" && portOverride.length > 0;
-
+  const previousConfig = structuredClone(config);
+  const { port, autoSwitched } = await resolveStartPort(config.server.host, portOverride);
   const runningPid = getRunningPid();
-  if (runningPid && hasExplicitPortOverride && config.server.port !== port) {
-    config.server.port = port;
-    saveConfig(config);
-  }
 
   if (runningPid) {
     return {
       alreadyRunning: true,
       pid: runningPid,
-      port,
+      port: config.server.port,
       logPath: getServiceLogPath(),
       autoSwitched: false,
       apiKeyRotated: false
     };
   }
 
-  if (hasExplicitPortOverride && config.server.port !== port) {
+  if (config.server.port !== port) {
     config.server.port = port;
     saveConfig(config);
   }
 
   // 每次真正启动服务前都轮换一次本地 api_key，并让受管 config.toml 使用同一新值。
   const persistedConfig = rotateServerApiKey(config);
-  const runtimeConfig = {
-    ...persistedConfig,
-    server: {
-      ...persistedConfig.server,
-      port
-    }
-  };
-  applyManagedCodexConfig(undefined, { config: runtimeConfig });
+  applyManagedCodexConfig(undefined, { config: persistedConfig });
 
   const logPath = getServiceLogPath();
   const logFd = fs.openSync(logPath, "a");
@@ -187,13 +272,28 @@ export async function startManagedService(portOverride?: string): Promise<{
     detached: true,
     stdio: ["ignore", logFd, logFd]
   });
+  const childPid = child.pid ?? null;
 
   child.unref();
-  fs.writeFileSync(getPidPath(), `${child.pid}\n`, "utf8");
+  if (!childPid) {
+    fs.closeSync(logFd);
+    rollbackFailedStart(null, previousConfig);
+    throw new Error("后台服务启动失败，未获取到有效子进程 PID");
+  }
+
+  fs.writeFileSync(getPidPath(), `${childPid}\n`, "utf8");
+  fs.closeSync(logFd);
+
+  try {
+    await waitForManagedServiceReady(config.server.host, port, childPid);
+  } catch (error) {
+    rollbackFailedStart(childPid, previousConfig);
+    throw error;
+  }
 
   return {
     alreadyRunning: false,
-    pid: child.pid ?? 0,
+    pid: childPid,
     port,
     logPath,
     autoSwitched,

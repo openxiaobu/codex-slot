@@ -71,7 +71,7 @@ codex-slot start --port 4399
 ```
 
 `start` will automatically write the required provider config into `~/.codex/config.toml`.
-It prefers port `4399` by default and will switch to the next available port automatically when `4399` is busy:
+It prefers port `4399` by default and will switch to the next available port automatically when `4399` is busy, then sync that actual port into config:
 Each start also generates a fresh local `api_key` and syncs it into the managed provider config.
 
 ```bash
@@ -140,7 +140,7 @@ Behavior:
 - On `cslot stop`, the original `model_provider` line and original `[model_providers.cslot]` block are restored from the saved snapshot
 - Other providers and settings in `config.toml` are left untouched
 - If you start with `--port`, the port is saved to `~/.cslot/config.yaml`
-- If you start without `--port`, `4399` is preferred first and the next free port is chosen automatically on conflict
+- If you start without `--port`, `4399` is preferred first and the next free port is chosen automatically on conflict, and the actual chosen port is written back to `~/.cslot/config.yaml` and the managed provider block
 - Every `start` rotates the local `api_key`, and the new value is written to both `~/.cslot/config.yaml` and the managed provider block
 
 ## Data Directory

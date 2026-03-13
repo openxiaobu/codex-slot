@@ -70,16 +70,13 @@ function buildManagedModelProviderBlock(eol: string): string {
  * @returns 带标记的 provider 配置块文本。
  */
 function buildManagedProviderBlock(eol: string, config: CslotConfig): string {
-
   return [
     PROVIDER_BLOCK_START_MARKER,
     "[model_providers.cslot]",
     'name = "cslot"',
     `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
     'wire_api = "responses"',
-    "",
-    "[model_providers.cslot.http_headers]",
-    `Authorization = "Bearer ${config.server.api_key}"`,
+    `http_headers = { Authorization = "Bearer ${config.server.api_key}" }`,
     PROVIDER_BLOCK_END_MARKER
   ].join(eol);
 }
