@@ -76,8 +76,10 @@ function buildManagedProviderBlock(eol: string, config: CslotConfig): string {
     "[model_providers.cslot]",
     'name = "cslot"',
     `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
-    `http_headers = { Authorization = "Bearer ${config.server.api_key}" }`,
     'wire_api = "responses"',
+    "",
+    "[model_providers.cslot.http_headers]",
+    `Authorization = "Bearer ${config.server.api_key}"`,
     PROVIDER_BLOCK_END_MARKER
   ].join(eol);
 }
@@ -402,7 +404,6 @@ export function deactivateManagedCodexConfig(): string | null {
 
   writeFileAtomic(targetFile, restored);
   clearManagedCodexConfigState();
-  console.log(bi(`已恢复: ${targetFile}`, `Restored: ${targetFile}`));
 
   return targetFile;
 }
