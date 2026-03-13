@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { loadConfig } from "./config";
 import { startServer } from "./server";
+import { bi } from "./text";
 
 /**
  * 后台服务进程入口。
@@ -21,6 +22,6 @@ async function main(): Promise<void> {
 
 void main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`cslot service 启动失败: ${message}`);
+  console.error(bi(`cslot service 启动失败: ${message}`, `cslot service failed to start: ${message}`));
   process.exit(1);
 });

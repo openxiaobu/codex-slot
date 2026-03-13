@@ -57,7 +57,7 @@ export interface ManagedAccount {
   imported_at?: string;
 }
 
-export interface CodexSwConfig {
+export interface CslotConfig {
   version: number;
   server: {
     host: string;
@@ -120,7 +120,14 @@ export interface AccountBlockState {
   updated_at: string;
 }
 
-export interface CodexSwState {
+export interface ManagedCodexConfigState {
+  target_file: string;
+  original_model_provider_block: string | null;
+  original_cslot_provider_block: string | null;
+}
+
+export interface CslotState {
   account_blocks: Record<string, AccountBlockState>;
   usage_cache: Record<string, UsageRefreshResult>;
+  managed_codex_config?: ManagedCodexConfigState | null;
 }

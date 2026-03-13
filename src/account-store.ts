@@ -13,6 +13,7 @@ import type {
   CodexRegistryAccount,
   ManagedAccount
 } from "./types";
+import { bi } from "./text";
 
 /**
  * 读取指定账号 HOME 下的 `.codex` 目录。
@@ -98,11 +99,11 @@ export function cloneCodexAuthState(sourceHome: string, targetHome: string): voi
   const sourceRegistryPath = path.join(sourceAccountsDir, "registry.json");
 
   if (!fs.existsSync(sourceAuthPath)) {
-    throw new Error(`来源目录缺少 auth.json: ${sourceAuthPath}`);
+    throw new Error(bi(`来源目录缺少 auth.json: ${sourceAuthPath}`, `Source directory is missing auth.json: ${sourceAuthPath}`));
   }
 
   if (!fs.existsSync(sourceRegistryPath)) {
-    throw new Error(`来源目录缺少 registry.json: ${sourceRegistryPath}`);
+    throw new Error(bi(`来源目录缺少 registry.json: ${sourceRegistryPath}`, `Source directory is missing registry.json: ${sourceRegistryPath}`));
   }
 
   fs.mkdirSync(targetCodexDir, { recursive: true });

@@ -4,7 +4,7 @@
 
 [中文文档](./docs/zh-CN.md)
 
-## Features
+## Overview
 
 - Reuse the official `~/.codex` login state
 - Manage multiple accounts or workspaces as separate slots
@@ -30,15 +30,16 @@ GitHub installation from the repository URL is not supported.
 
 ## Quick Start
 
-Import your current Codex login state:
+1. Import your current Codex login state:
 
 ```bash
 codex-slot import current ~
 ```
 
 `import` copies the official login state into `~/.cslot/homes/<name>` instead of referencing the source HOME directly.
+`current` is only an example slot name, not a built-in account.
 
-Check latest usage:
+2. Check the latest usage:
 
 ```bash
 codex-slot status
@@ -62,7 +63,7 @@ If you only want a non-interactive snapshot of the current state:
 codex-slot status --no-interactive
 ```
 
-Start the local proxy:
+3. Start the local proxy:
 
 ```bash
 codex-slot start
@@ -80,11 +81,33 @@ codex-slot start
 ```bash
 codex-slot add <name>
 codex-slot del <name>
+codex-slot rename <oldName> <newName>
 codex-slot import <name> [HOME]
 codex-slot status
 codex-slot start [--port <port>]
 codex-slot stop
 ```
+
+Common patterns:
+
+- `cslot import work ~/workspace-home`
+- `cslot rename work work-main`
+- `cslot start`
+
+## Architecture
+
+The project is intentionally split by responsibility:
+
+- `src/cli.ts`: CLI bootstrap and command registration only
+- `src/account-commands.ts`: account import, login, remove command handlers
+- `src/account-commands.ts`: also owns slot rename command handling
+- `src/service-control.ts`: background service lifecycle management
+- `src/status-command.ts`: usage refresh output and interactive toggle UI
+- `src/codex-config.ts`: managed `~/.codex/config.toml` apply/restore logic
+- `src/account-store.ts`, `src/usage-sync.ts`, `src/scheduler.ts`, `src/status.ts`: core domain and runtime logic
+- `src/text.ts`: shared bilingual text and locale-independent formatting helpers
+
+This keeps the CLI entry thin while preserving stable behavior in the lower-level modules.
 
 ## How `status` Works
 
@@ -99,23 +122,22 @@ Instead it:
 
 ## Managed Codex Config
 
-`codex-slot start` writes or updates a provider block like this, based on the current `~/.cslot/config.yaml`:
+`codex-slot start` writes or updates a managed provider block like this, based on the current `~/.cslot/config.yaml`:
 
 ```toml
 [model_providers.cslot]
 name = "cslot"
 base_url = "http://127.0.0.1:4389/v1"
-http_headers = { Authorization = "Bearer cslot-defaultkey" }
+http_headers = { Authorization = "Bearer <your-local-api-key>" }
 wire_api = "responses"
 ```
 
 Behavior:
 
-- If global `model_provider` or `# model_provider = ...` exists, it is normalized to `model_provider = "cslot"`
-- If `[model_providers.cslot]` already exists, only that provider block is replaced with the fresh one above
+- A managed marker block is inserted for `model_provider = "cslot"` and `[model_providers.cslot]`
+- On `cslot stop`, the original `model_provider` line and original `[model_providers.cslot]` block are restored from the saved snapshot
 - Other providers and settings in `config.toml` are left untouched
 - If you start with `--port`, the port is saved to `~/.cslot/config.yaml`
-- `cslot stop` comments out the active `model_provider = "cslot"` line and keeps the rest of the file unchanged
 
 ## Data Directory
 
@@ -125,8 +147,6 @@ Behavior:
 - `~/.cslot/state.json`
 - `~/.cslot/cslot.pid`
 - `~/.cslot/logs/service.log`
-
-If you previously used `~/.codexsw`, it is migrated automatically.
 
 ## Limit Handling
 

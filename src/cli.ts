@@ -1,730 +1,166 @@
 #!/usr/bin/env node
-import fs from "node:fs";
-import path from "node:path";
-import { spawn } from "node:child_process";
-import readline from "node:readline";
 import { Command } from "commander";
-import type { AccountRuntimeStatus } from "./types";
 import {
-  cloneCodexAuthState,
-  registerManagedAccount,
-  removeManagedAccount
-} from "./account-store";
-import {
-  expandHome,
-  getCodexSwHome,
-  getManagedHome,
-  getPidPath,
-  getServiceLogPath,
-  loadConfig,
-  saveConfig
-} from "./config";
-import { loginManagedAccount } from "./login";
-import { pickBestAccount } from "./scheduler";
-import { startServer } from "./server";
-import {
-} from "./state";
-import { collectAccountStatuses, renderStatusTable } from "./status";
-import { refreshAllAccountUsage } from "./usage-sync";
+  handleAccountImport,
+  handleAccountLogin,
+  handleAccountRemoveCommand,
+  handleAccountRename
+} from "./account-commands";
+import { getCliVersion } from "./cli-helpers";
+import { getCslotHome, loadConfig } from "./config";
+import { handleStart, handleStop } from "./service-control";
+import { handleStatus, type StatusCommandOptions } from "./status-command";
+import { bi } from "./text";
 
 /**
- * 读取当前 CLI 的发布版本号，优先与 npm 包元数据保持一致。
+ * 为 CLI 程序注册根级帮助信息与统一示例。
  *
- * @returns string，当前包版本号；当 package.json 不可读或字段缺失时返回 `0.0.0`。
- * @throws 无显式抛出；内部异常会被吞掉并回退到默认版本号。
- */
-function getCliVersion(): string {
-  try {
-    const packageJsonPath = path.resolve(__dirname, "../package.json");
-
-    // 直接读取发布包内的 package.json，避免 CLI 版本号与 npm 发布版本脱节。
-    const packageJsonContent = fs.readFileSync(packageJsonPath, "utf8");
-    const packageJson = JSON.parse(packageJsonContent) as { version?: unknown };
-
-    if (typeof packageJson.version === "string" && packageJson.version.trim().length > 0) {
-      return packageJson.version;
-    }
-  } catch {
-    // 读取失败时使用保底版本，避免 `-V` 命令直接异常退出。
-  }
-
-  return "0.0.0";
-}
-
-interface StatusCommandOptions {
-  interactive?: boolean;
-}
-
-/**
- * 进入交互式全屏缓冲区，并隐藏光标，确保后续重绘始终基于固定画布。
- *
- * @returns void，无返回值。
+ * @param program Commander 程序实例。
+ * @returns 无返回值。
  * @throws 无显式抛出。
  */
-function enterInteractiveScreen(): void {
-  // 切到 alternate screen，避免在主终端历史中反复覆盖导致画面抖动。
-  process.stdout.write("\x1b[?1049h");
-  process.stdout.write("\x1b[?25l");
-}
-
-/**
- * 退出交互式全屏缓冲区，并恢复光标显示。
- *
- * @returns void，无返回值。
- * @throws 无显式抛出。
- */
-function leaveInteractiveScreen(): void {
-  process.stdout.write("\x1b[?25h");
-  process.stdout.write("\x1b[?1049l");
-}
-
-/**
- * 在交互式全屏缓冲区中从左上角整块重绘内容。
- *
- * @param lines 待输出的文本行数组。
- * @returns void，无返回值。
- * @throws 无显式抛出。
- */
-function renderInteractiveScreen(lines: string[]): void {
-  // 每次都回到左上角并清屏，避免依赖“上一帧占了多少行”的脆弱回退逻辑。
-  readline.cursorTo(process.stdout, 0, 0);
-  readline.clearScreenDown(process.stdout);
-  process.stdout.write(lines.join("\n"));
-  process.stdout.write("\n");
-}
-
-/**
- * 计算交互式状态面板的初始光标位置。
- *
- * 业务含义：
- * 1. 优先将光标定位到当前自动调度选中的账号，确保首屏焦点与 `selected=` 一致。
- * 2. 若当前没有自动选中账号，则回退到首个可用账号，方便直接切换。
- * 3. 若仍不存在可用账号，则回退到首个已启用账号；最后兜底为列表第一项。
- *
- * @param accounts 已按展示顺序排好的账号列表；不能为空，元素需包含启用状态与账号 id。
- * @param statuses 当前账号运行时状态快照；用于判断账号是否可用。
- * @returns number，初始光标所在的数组下标；当未命中任何候选时返回 `0`。
- * @throws 无显式抛出。
- */
-function resolveInitialCursorIndex(
-  accounts: Array<{ id: string; enabled: boolean }>,
-  statuses: AccountRuntimeStatus[]
-): number {
-  const selected = pickBestAccount();
-  if (selected) {
-    const selectedIndex = accounts.findIndex((account) => account.id === selected.account.id);
-    if (selectedIndex >= 0) {
-      return selectedIndex;
-    }
-  }
-
-  const statusById = new Map(statuses.map((item) => [item.id, item]));
-
-  // 当前有可用账号时，优先聚焦到第一个可用账号，减少用户额外移动光标的成本。
-  const availableIndex = accounts.findIndex((account) => statusById.get(account.id)?.isAvailable);
-  if (availableIndex >= 0) {
-    return availableIndex;
-  }
-
-  // 若所有账号都不可用，至少默认落在首个已启用账号上，避免首屏停在明显不可操作的禁用项。
-  const enabledIndex = accounts.findIndex((account) => account.enabled);
-  if (enabledIndex >= 0) {
-    return enabledIndex;
-  }
-
-  return 0;
-}
-
-/**
- * 刷新所有已录入账号的远端额度，并输出最新状态表格。
- *
- * @returns Promise，无返回值。
- */
-async function handleStatus(options?: StatusCommandOptions): Promise<void> {
-  await refreshAllAccountUsage();
-
-  const statuses = collectAccountStatuses();
-  const interactive = options?.interactive ?? true;
-
-  if (interactive) {
-    await handleInteractiveToggle(statuses);
-    return;
-  }
-
-  const selected = pickBestAccount();
-  const displayStatuses = statuses.map((item) => ({
-    ...item,
-    name: item.id === selected?.account.id ? `${item.name}*` : item.name
-  }));
-  const available = statuses.filter((item) => item.isAvailable).length;
-  const fiveHourLimited = statuses.filter(
-    (item) => item.isFiveHourLimited && !item.isWeeklyLimited
-  ).length;
-  const weeklyLimited = statuses.filter((item) => item.isWeeklyLimited).length;
-
-  console.log(renderStatusTable(displayStatuses));
-  console.log("");
-  console.log(`available=${available} 5h_limited=${fiveHourLimited} weekly_limited=${weeklyLimited}`);
-  console.log(`selected=${selected ? selected.account.name : "none"}`);
-}
-
-/**
- * 进入账号启用状态的交互式切换界面，并在用户确认退出后恢复终端状态。
- *
- * @param initialStatuses 进入交互前刚刷新的账号状态快照，用于首屏复用同一块展示区域。
- * @returns Promise，在用户按下 `Enter`、`q` 或 `Ctrl+C` 退出交互后完成。
- * @throws 无显式抛出；终端读写异常将沿调用链透出。
- */
-async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[]): Promise<void> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.log("当前环境不支持交互式操作，请直接编辑配置文件或使用 --no-interactive 选项。");
-    return;
-  }
-
-  const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: (mode: boolean) => void };
-  readline.emitKeypressEvents(stdin);
-  stdin.setRawMode?.(true);
-
-  const config = loadConfig();
-  if (config.accounts.length === 0) {
-    console.log("当前没有已录入账号。");
-    stdin.setRawMode?.(false);
-    return;
-  }
-
-  // 按名称排序，方便浏览。
-  const accounts = [...config.accounts].sort((a, b) => a.name.localeCompare(b.name));
-  let cursor = resolveInitialCursorIndex(accounts, initialStatuses ?? collectAccountStatuses());
-  let changed = false;
-
-  enterInteractiveScreen();
-
-  return await new Promise<void>((resolve) => {
-    let closed = false;
-
-    const render = () => {
-      const latestStatuses = collectAccountStatuses();
-      const selected = pickBestAccount();
-      const statusSource = changed ? latestStatuses : (initialStatuses ?? latestStatuses);
-      const statusById = new Map(statusSource.map((item) => [item.id, item]));
-      const autoSelectedId = selected?.account.id ?? null;
-
-      // 交互态按账号列表顺序重组表格行，确保选择框与状态信息严格同行显示。
-      const displayStatuses = accounts
-        .map((account) => {
-          const status = statusById.get(account.id);
-          if (!status) {
-            return null;
-          }
-
-          return {
-            ...status,
-            name: account.id === autoSelectedId ? `${status.name}*` : status.name
-          };
-        })
-        .filter((item): item is AccountRuntimeStatus => item !== null);
-      const available = statusSource.filter((item) => item.isAvailable).length;
-      const fiveHourLimited = statusSource.filter(
-        (item) => item.isFiveHourLimited && !item.isWeeklyLimited
-      ).length;
-      const weeklyLimited = statusSource.filter((item) => item.isWeeklyLimited).length;
-      const lines: string[] = [
-        renderStatusTable(displayStatuses, {
-          selectorColumn: {
-            enabledById: Object.fromEntries(accounts.map((account) => [account.id, account.enabled])),
-            cursorAccountId: accounts[cursor]?.id ?? null
-          }
-        }),
-        "",
-        `available=${available} 5h_limited=${fiveHourLimited} weekly_limited=${weeklyLimited}`,
-        `selected=${selected ? selected.account.name : "none"}`,
-        "",
-        "空格切换当前行启用状态，Enter / q 退出。"
-      ];
-      renderInteractiveScreen(lines);
-    };
-
-    const applyChanges = () => {
-      if (!changed) {
-        return;
-      }
-
-      const latest = loadConfig();
-      for (const account of accounts) {
-        const index = latest.accounts.findIndex((item) => item.id === account.id);
-        if (index >= 0) {
-          latest.accounts[index] = account;
-        }
-      }
-      saveConfig(latest);
-      changed = false;
-      initialStatuses = collectAccountStatuses();
-    };
-
-    const exitInteractive = () => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-
-      // 退出前先持久化本轮勾选变更，避免用户误以为切换未生效。
-      applyChanges();
-
-      stdin.off("keypress", onKeypress);
-      stdin.setRawMode?.(false);
-      stdin.pause();
-      leaveInteractiveScreen();
-
-      console.log("已退出账号启用状态编辑。");
-      resolve();
-    };
-
-    const onKeypress = (_str: string, key: readline.Key) => {
-      if (key.name === "up") {
-        // 顶部账号继续按上键时保持当前位置，避免交互焦点在首尾之间循环跳转。
-        const nextCursor = Math.max(0, cursor - 1);
-        if (nextCursor !== cursor) {
-          cursor = nextCursor;
-          render();
-        }
-        return;
-      }
-
-      if (key.name === "down") {
-        // 底部账号继续按下键时保持当前位置，避免用户误以为光标异常回绕。
-        const nextCursor = Math.min(accounts.length - 1, cursor + 1);
-        if (nextCursor !== cursor) {
-          cursor = nextCursor;
-          render();
-        }
-        return;
-      }
-
-      if (key.name === "space") {
-        // 空格直接切换当前选中账号的启用状态，并立即写回配置。
-        accounts[cursor].enabled = !accounts[cursor].enabled;
-        changed = true;
-        applyChanges();
-        render();
-        return;
-      }
-
-      if (key.name === "return" || key.name === "enter") {
-        exitInteractive();
-        return;
-      }
-
-      if (key.name === "q" || (key.ctrl && key.name === "c")) {
-        exitInteractive();
-      }
-    };
-
-    render();
-    stdin.on("keypress", onKeypress);
-  });
-}
-
-/**
- * 将已有的 Codex HOME 目录中的登录态复制到 cslot 自己的隔离目录并纳入管理。
- *
- * @param name 本地账号标识（等同于配置中的 name 字段）。
- * @param codexHome 现有 HOME 目录；若未传则默认使用当前用户 HOME。
- * @returns 无返回值。
- */
-function handleAccountImport(name: string, codexHome?: string): void {
-  const sourceHome = codexHome ? expandHome(codexHome) : process.env.HOME ?? "";
-  const managedHome = getManagedHome(name);
-
-  cloneCodexAuthState(sourceHome, managedHome);
-
-  const account = registerManagedAccount(name, managedHome);
-  console.log(`账号已导入: ${account.id}`);
-  console.log(`来源 HOME: ${sourceHome}`);
-  console.log(`已复制到: ${account.codex_home}`);
-}
-
-/**
- * 执行隔离登录流程，将账号录入到 cslot 管理目录。
- *
- * @param name 本地账号标识（等同于配置中的 name 字段）。
- * @returns Promise，无返回值。
- */
-async function handleAccountLogin(name: string): Promise<void> {
-  const home = await loginManagedAccount(name);
-  console.log(`登录完成，账号目录: ${home}`);
-}
-
-/**
- * 删除配置中的账号项。
- *
- * @param name 本地账号标识（等同于配置中的 name 字段）。
- * @returns 无返回值。
- * @throws 当账号不存在时抛出错误。
- */
-function handleAccountRemove(name: string): void {
-  const removed = removeManagedAccount(name);
-
-  if (!removed) {
-    throw new Error(`未找到账号 ${name}`);
-  }
-
-  console.log(`已删除账号配置: ${removed.id}`);
-}
-
-/**
- * del 子命令入口：在未提供 name 时先展示当前已录入账号列表，便于选择。
- *
- * @param name 可选的账号标识（等同于配置中的 name 字段）。
- * @returns 无返回值。
- */
-function handleAccountRemoveCommand(name?: string): void {
-  if (!name) {
-    const config = loadConfig();
-
-    if (config.accounts.length === 0) {
-      console.log("当前没有已录入账号。");
-      return;
-    }
-
-    console.log("当前已录入账号（name）：");
-    for (const account of config.accounts) {
-      if (account.email) {
-        console.log(`- ${account.id} (${account.email})`);
-      } else {
-        console.log(`- ${account.id}`);
-      }
-    }
-    console.log("");
-    console.log("请使用以下命令删除指定账号，例如：");
-    console.log("  codex-slot del <name>");
-    return;
-  }
-
-  handleAccountRemove(name);
-}
-
-/**
- * 判断后台服务当前是否在运行。
- *
- * @returns 运行中的 PID；未运行时返回 `null`。
- */
-function getRunningPid(): number | null {
-  const pidPath = getPidPath();
-
-  if (!fs.existsSync(pidPath)) {
-    return null;
-  }
-
-  const raw = fs.readFileSync(pidPath, "utf8").trim();
-  const pid = Number(raw);
-
-  if (!Number.isInteger(pid) || pid <= 0) {
-    fs.rmSync(pidPath, { force: true });
-    return null;
-  }
-
-  try {
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    fs.rmSync(pidPath, { force: true });
-    return null;
-  }
-}
-
-/**
- * 后台启动 cslot 服务并写入 PID 文件。
- *
- * @returns Promise，无返回值。
- * @throws 当服务已在运行或子进程启动失败时抛出异常。
- */
-async function handleStart(portOverride?: string): Promise<void> {
-  const config = loadConfig();
-  const port = portOverride ? Number(portOverride) : config.server.port;
-
-  if (portOverride) {
-    config.server.port = port;
-    saveConfig(config);
-  }
-
-  const runningPid = getRunningPid();
-
-  if (runningPid) {
-    console.log(`服务已在运行，PID=${runningPid}`);
-    if (portOverride) {
-      console.log(`已将新端口写入配置: ${port}`);
-      console.log("请先执行 cslot stop，再执行 cslot start 使新端口生效。");
-    }
-    return;
-  }
-
-  applyManagedCodexConfig();
-
-  const logPath = getServiceLogPath();
-  const logFd = fs.openSync(logPath, "a");
-  const child = spawn(process.execPath, [__filename.replace(/cli\.js$/, "serve.js"), "--port", String(port)], {
-    detached: true,
-    stdio: ["ignore", logFd, logFd]
-  });
-
-  child.unref();
-  fs.writeFileSync(getPidPath(), `${child.pid}\n`, "utf8");
-
-  console.log(`服务已启动: http://${config.server.host}:${port}`);
-  console.log(`PID: ${child.pid}`);
-  console.log(`日志: ${logPath}`);
-}
-
-/**
- * 停止后台运行的 cslot 服务。
- *
- * @returns 无返回值。
- */
-function handleStop(): void {
-  const pid = getRunningPid();
-
-  if (!pid) {
-    console.log("服务未运行");
-    deactivateManagedCodexConfig();
-    return;
-  }
-
-  process.kill(pid, "SIGTERM");
-  fs.rmSync(getPidPath(), { force: true });
-  deactivateManagedCodexConfig();
-  console.log(`服务已停止，PID=${pid}`);
-}
-
-/**
- * 对正则元字符做转义，供动态构造匹配模式使用。
- *
- * @param input 原始字符串。
- * @returns 经过转义后的安全正则片段。
- */
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function ensureParentDir(filePath: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-}
-
-function writeFileAtomic(targetFile: string, content: string): void {
-  ensureParentDir(targetFile);
-  const tmpFile = `${targetFile}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmpFile, content, "utf8");
-  fs.renameSync(tmpFile, targetFile);
-}
-
-/**
- * 返回默认的 `codex config.toml` 路径。
- *
- * @returns 默认 `config.toml` 绝对路径。
- */
-function getDefaultCodexConfigPath(): string {
-  return path.join(process.env.HOME ?? "", ".codex", "config.toml");
-}
-
-/**
- * 生成 cslot provider 配置块。
- *
- * @returns 可直接写入 `config.toml` 的配置块内容。
- */
-function buildManagedConfigBlock(): string {
-  const config = loadConfig();
-
-  return [
-    "[model_providers.cslot]",
-    'name = "cslot"',
-    `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
-    `http_headers = { Authorization = "Bearer ${config.server.api_key}" }`,
-    'wire_api = "responses"'
-  ].join("\n");
-}
-
-/**
- * 将 cslot provider 配置写入指定的 codex config.toml。
- *
- * @param targetPathOrDir 可选的 codex 配置目录或 config.toml 文件路径。
- * @returns 实际写入的 `config.toml` 文件路径。
- */
-function applyManagedCodexConfig(
-  targetPathOrDir?: string,
-  options?: { silent?: boolean }
-): string {
-  const rawTarget = targetPathOrDir ? expandHome(targetPathOrDir) : getDefaultCodexConfigPath();
-  const targetFile = rawTarget.endsWith(".toml") ? rawTarget : path.join(rawTarget, "config.toml");
-  const block = buildManagedConfigBlock();
-
-  let original = "";
-  if (fs.existsSync(targetFile)) {
-    original = fs.readFileSync(targetFile, "utf8");
-  }
-
-  // 更稳定的策略：仅按 provider 名称和 model_provider 改动，不引入额外的 marker。
-  const lines = original.length > 0 ? original.split(/\r?\n/) : [];
-  let replacedModelProvider = false;
-  const modelProviderLine = 'model_provider = "cslot"';
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const trimmed = lines[i].trim();
-
-    // 优先替换被注释掉的默认行（只替换第一处，减少对用户文件的干扰）。
-    if (!replacedModelProvider && /^#\s*model_provider\s*=/.test(trimmed)) {
-      lines[i] = modelProviderLine;
-      replacedModelProvider = true;
-      continue;
-    }
-
-    // 替换真实生效的 model_provider 行。
-    if (/^model_provider\s*=/.test(trimmed) && !trimmed.startsWith("#")) {
-      lines[i] = modelProviderLine;
-      replacedModelProvider = true;
-      continue;
-    }
-  }
-
-  if (!replacedModelProvider) {
-    const firstNonEmptyIndex = lines.findIndex((line) => line.trim() !== "");
-    if (firstNonEmptyIndex >= 0) {
-      lines.splice(firstNonEmptyIndex, 0, modelProviderLine, "");
-    } else {
-      lines.push(modelProviderLine, "");
-    }
-  }
-
-  // 替换或追加 [model_providers.cslot] 这一段配置。
-  const blockLines = block.split("\n");
-  let insertAfterIndex = -1;
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const trimmed = lines[i].trim();
-
-    if (trimmed === "[model_providers.cslot]") {
-      let j = i;
-
-      while (j < lines.length) {
-        const currentTrimmed = lines[j].trim();
-
-        if (j > i && currentTrimmed.startsWith("[") && !currentTrimmed.startsWith("[[")) {
-          break;
-        }
-
-        insertAfterIndex = j;
-        j += 1;
-      }
-
-      // 删除旧的 cslot provider 表块，准备写入新的。
-      lines.splice(i, j - i);
-      insertAfterIndex = i - 1;
-      i = j - 1;
-    }
-  }
-
-  if (insertAfterIndex >= 0) {
-    lines.splice(insertAfterIndex + 1, 0, "", ...blockLines);
-  } else {
-    if (lines.length > 0 && lines[lines.length - 1].trim() !== "") {
-      lines.push("");
-    }
-    lines.push(...blockLines);
-  }
-
-  const nextContent = `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
-  writeFileAtomic(targetFile, nextContent);
-
-  if (!options?.silent) {
-    const config = loadConfig();
-    console.log(`已写入: ${targetFile}`);
-    console.log(`base_url=http://${config.server.host}:${config.server.port}/v1`);
-    console.log(`api_key=${config.server.api_key}`);
-    console.log("提示: start 会自动接管 codex provider，stop 会自动恢复。");
-  }
-
-  return targetFile;
-}
-
-/**
- * 关闭 cslot 作为当前默认 provider 的接管状态。
- *
- * @returns 无返回值。
- */
-function deactivateManagedCodexConfig(): void {
-  const targetFile = getDefaultCodexConfigPath();
-
-  if (!fs.existsSync(targetFile)) {
-    return;
-  }
-
-  const original = fs.readFileSync(targetFile, "utf8");
-  const nextContent = original.replace(
-    /^(\s*)model_provider\s*=\s*"cslot"\s*$/m,
-    '$1# model_provider = "cslot"'
+function configureRootProgram(program: Command): void {
+  program
+    .name("codex-slot")
+    .description(bi("本地 Codex 多账号切换与状态管理工具", "Local Codex multi-account switcher"))
+    .helpOption("-h, --help", bi("显示帮助", "Show help"))
+    .version(getCliVersion());
+
+  program.addHelpText(
+    "after",
+    [
+      "",
+      `${bi("示例", "Examples")}:`,
+      "  cslot import work ~/workspace-home",
+      "  cslot rename work work-main",
+      "  cslot start --port 4399",
+      "  cslot status --no-interactive",
+      "",
+      `${bi("说明", "Notes")}:`,
+      `  ${bi(
+        "`import current ~` 里的 current 只是示例槽位名，不是内置账号。",
+        "`current` in `import current ~` is only an example slot name, not a built-in account."
+      )}`
+    ].join("\n")
   );
-
-  if (nextContent !== original) {
-    fs.writeFileSync(targetFile, nextContent, "utf8");
-    console.log(`已更新: ${targetFile}`);
-  }
 }
 
 /**
- * CLI 主入口，负责命令注册与执行。
+ * 注册账号相关子命令。
+ *
+ * @param program Commander 程序实例。
+ * @returns 无返回值。
+ * @throws 无显式抛出。
+ */
+function registerAccountCommands(program: Command): void {
+  program
+    .command("add")
+    .description(bi("登录并新增一个账号或工作空间", "Login and add a managed slot"))
+    .argument("<name>", bi("账号标识（本地槽位名）", "Local slot name"))
+    .action(async (name: string) => {
+      await handleAccountLogin(name);
+    });
+
+  program
+    .command("del")
+    .description(bi("删除一个已录入账号", "Remove a managed slot"))
+    .argument("[name]", bi("账号标识（本地槽位名），留空时列出全部", "Local slot name"))
+    .action(handleAccountRemoveCommand);
+
+  program
+    .command("import")
+    .description(
+      bi(
+        "导入当前或指定 HOME 下的官方 codex 登录态",
+        "Import official Codex auth state from the current or specified HOME"
+      )
+    )
+    .argument("<name>", bi("账号标识（本地槽位名，例如 work/current）", "Local slot name, for example work/current"))
+    .argument("[codexHome]", bi("已有 HOME 目录，默认当前用户 HOME", "Source HOME, defaults to the current user HOME"))
+    .addHelpText(
+      "after",
+      [
+        "",
+        `${bi("说明", "Note")}:`,
+        `  ${bi(
+          "name 是你自定义的槽位名；`current` 不是系统保留字。",
+          "`name` is your custom slot name; `current` is not a reserved keyword."
+        )}`
+      ].join("\n")
+    )
+    .action(handleAccountImport);
+
+  program
+    .command("rename")
+    .description(bi("重命名一个已录入账号", "Rename a managed slot"))
+    .argument("<oldName>", bi("原槽位名", "Old slot name"))
+    .argument("<newName>", bi("新槽位名", "New slot name"))
+    .action(handleAccountRename);
+}
+
+/**
+ * 注册配置与状态相关子命令。
+ *
+ * @param program Commander 程序实例。
+ * @returns 无返回值。
+ * @throws 无显式抛出。
+ */
+function registerRuntimeCommands(program: Command): void {
+  program
+    .command("status")
+    .description(bi("刷新并查看所有已录入账号或工作空间的最新额度", "Refresh usage for all managed slots"))
+    .option("--no-interactive", bi("仅输出状态表，不进入交互式切换", "Print only"))
+    .action(async (options: StatusCommandOptions) => {
+      await handleStatus(options);
+    });
+
+  program
+    .command("start")
+    .description(bi("后台启动本地代理服务", "Start the local proxy in background"))
+    .option("--port <port>", bi("监听端口；会同步写入本地配置", "Listen port and save it to local config"))
+    .addHelpText(
+      "after",
+      [
+        "",
+        `${bi("说明", "Notes")}:`,
+        `  ${bi(
+          "start 会自动接管 `~/.codex/config.toml`，并在指定端口时自动写入该端口；stop 会恢复接管前内容。",
+          "`start` will manage `~/.codex/config.toml` automatically, write the specified port when provided, and `stop` will restore the previous content."
+        )}`,
+      ].join("\n")
+    )
+    .action(async (options: { port?: string }) => {
+      await handleStart(options.port);
+    });
+
+  program
+    .command("stop")
+    .description(bi("停止后台代理服务并恢复 codex 配置", "Stop the proxy and restore Codex config"))
+    .action(handleStop);
+}
+
+/**
+ * CLI 主入口，负责初始化环境、注册命令并交给 Commander 分发执行。
  *
  * @returns Promise，无返回值。
  * @throws 当命令执行失败时向上抛出异常。
  */
 async function main(): Promise<void> {
   const program = new Command();
-  // 禁用内置 help 子命令，仅保留 --help / -h 形式。
   program.addHelpCommand(false);
-  getCodexSwHome();
+
+  getCslotHome();
   loadConfig();
 
-  program
-    .name("codex-slot")
-    .description("本地 Codex 多账号切换与状态管理工具")
-    .version(getCliVersion());
-
-  program
-    .command("add")
-    .description("登录并新增一个账号或工作空间")
-    .argument("<name>", "账号标识（用于本地区分）")
-    .action(async (name: string) => {
-      await handleAccountLogin(name);
-    });
-  program
-    .command("del")
-    .description("删除一个已录入账号")
-    .argument("[name]", "账号标识（用于本地区分），留空时会列出当前所有账号")
-    .action(handleAccountRemoveCommand);
-  program
-    .command("import")
-    .description("导入当前或指定 HOME 下的官方 codex 登录态")
-    .argument("<name>", "账号标识（用于本地区分）")
-    .argument("[codexHome]", "已有 HOME 目录，默认当前用户 HOME")
-    .action(handleAccountImport);
-  program
-    .command("status")
-    .description("刷新并查看所有已录入账号或工作空间的最新额度")
-    .option("--no-interactive", "仅输出状态表，不进入交互式切换")
-    .action(async (options: StatusCommandOptions) => {
-      await handleStatus(options);
-    });
-  program
-    .command("start")
-    .description("后台启动本地代理服务")
-    .option("--port <port>", "监听端口")
-    .action(async (options: { port: string }) => {
-      await handleStart(options.port);
-    });
-  program.command("stop").description("停止后台代理服务").action(handleStop);
+  configureRootProgram(program);
+  registerAccountCommands(program);
+  registerRuntimeCommands(program);
 
   await program.parseAsync(process.argv);
 }
 
 void main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`codex-slot 执行失败: ${message}`);
+  console.error(bi(`codex-slot 执行失败: ${message}`, `codex-slot failed: ${message}`));
   process.exit(1);
 });

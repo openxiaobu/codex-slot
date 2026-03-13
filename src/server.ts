@@ -6,6 +6,7 @@ import { loadConfig } from "./config";
 import { collectAccountStatuses } from "./status";
 import { listCandidateAccounts, pickBestAccount } from "./scheduler";
 import { setAccountBlock } from "./state";
+import { bi } from "./text";
 import { refreshAccountTokens, refreshAccountUsage } from "./usage-sync";
 import type { SchedulerPick } from "./types";
 
@@ -136,7 +137,7 @@ function buildNetworkUnavailablePayload(accountId: string, error: unknown): {
 
   return {
     error: {
-      message: `网络不可用，账号 ${accountId} 无法连接上游: ${message}`,
+      message: bi(`网络不可用，账号 ${accountId} 无法连接上游: ${message}`, `Network unavailable. Account ${accountId} cannot reach upstream: ${message}`),
       type: "network_unavailable"
     }
   };
@@ -240,7 +241,7 @@ export async function startServer(port: number): Promise<void> {
     const bearer = getBearerToken(request.headers.authorization);
     if (bearer !== config.server.api_key) {
       reply.code(401);
-      throw new Error("invalid local api key");
+      throw new Error(bi("本地 API Key 无效", "Invalid local API key"));
     }
   });
 
@@ -272,7 +273,7 @@ export async function startServer(port: number): Promise<void> {
       reply.code(503);
       reply.send({
         error: {
-          message: "当前没有可用账号",
+          message: bi("当前没有可用账号", "No available account"),
           type: "no_available_account"
         }
       });
@@ -281,7 +282,7 @@ export async function startServer(port: number): Promise<void> {
 
     let lastErrorPayload: unknown = {
       error: {
-        message: "所有账号都请求失败",
+        message: bi("所有账号都请求失败", "All accounts failed"),
         type: "all_accounts_failed"
       }
     };
@@ -297,7 +298,7 @@ export async function startServer(port: number): Promise<void> {
         markAccountFailure(picked.account.id, "invalid_account_auth", 10 * 60);
         lastErrorPayload = {
           error: {
-            message: `账号 ${picked.account.id} 缺少 access_token`,
+            message: bi(`账号 ${picked.account.id} 缺少 access_token`, `Account ${picked.account.id} is missing access_token`),
             type: "invalid_account_auth"
           }
         };

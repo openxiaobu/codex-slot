@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { hasCompleteCodexAuthState, registerManagedAccount } from "./account-store";
 import { getManagedHome } from "./config";
+import { bi } from "./text";
 
 /**
  * 使用独立 HOME 目录拉起官方 `codex login`，完成单账号录入。
@@ -26,7 +27,7 @@ export async function loginManagedAccount(accountId: string): Promise<string> {
     child.on("exit", (code) => {
       if (code === 0) {
         if (!hasCompleteCodexAuthState(managedHome)) {
-          reject(new Error("codex login 已退出，但未检测到完整登录态，请重新登录"));
+          reject(new Error(bi("codex login 已退出，但未检测到完整登录态，请重新登录", "codex login exited, but no complete auth state was detected. Please log in again.")));
           return;
         }
 
@@ -35,7 +36,7 @@ export async function loginManagedAccount(accountId: string): Promise<string> {
         return;
       }
 
-      reject(new Error(`codex login 失败，退出码: ${code ?? "unknown"}`));
+      reject(new Error(bi(`codex login 失败，退出码: ${code ?? "unknown"}`, `codex login failed with exit code: ${code ?? "unknown"}`)));
     });
 
     child.on("error", (error) => {

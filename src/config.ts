@@ -1,9 +1,10 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
-import type { CodexSwConfig, ManagedAccount } from "./types";
+import type { CslotConfig, ManagedAccount } from "./types";
 
 const managedAccountSchema = z.object({
   id: z.string().min(1),
@@ -44,18 +45,22 @@ const configSchema = z.object({
 });
 
 /**
+ * 生成默认的本地 API Key，用于首次初始化配置时避免使用固定常量。
+ *
+ * @returns 随机生成的本地 API Key。
+ */
+function generateDefaultLocalApiKey(): string {
+  return `cslot-${crypto.randomBytes(18).toString("hex")}`;
+}
+
+/**
  * 返回 cslot 的根目录，并确保基础目录结构存在。
  *
  * @returns cslot 根目录绝对路径。
  * @throws 当目录无法创建时抛出文件系统错误。
  */
-export function getCodexSwHome(): string {
+export function getCslotHome(): string {
   const home = path.join(os.homedir(), ".cslot");
-  const legacyHome = path.join(os.homedir(), ".codexsw");
-
-  if (!fs.existsSync(home) && fs.existsSync(legacyHome)) {
-    fs.cpSync(legacyHome, home, { recursive: true });
-  }
 
   // 先创建 cslot 根目录，后续命令统一基于该目录读写状态。
   fs.mkdirSync(home, { recursive: true });
@@ -71,7 +76,7 @@ export function getCodexSwHome(): string {
  * @returns 配置文件绝对路径。
  */
 export function getConfigPath(): string {
-  return path.join(getCodexSwHome(), "config.yaml");
+  return path.join(getCslotHome(), "config.yaml");
 }
 
 /**
@@ -80,7 +85,7 @@ export function getConfigPath(): string {
  * @returns PID 文件绝对路径。
  */
 export function getPidPath(): string {
-  return path.join(getCodexSwHome(), "cslot.pid");
+  return path.join(getCslotHome(), "cslot.pid");
 }
 
 /**
@@ -89,7 +94,7 @@ export function getPidPath(): string {
  * @returns 日志文件绝对路径。
  */
 export function getServiceLogPath(): string {
-  return path.join(getCodexSwHome(), "logs", "service.log");
+  return path.join(getCslotHome(), "logs", "service.log");
 }
 
 /**
@@ -116,17 +121,17 @@ export function expandHome(input: string): string {
  * @returns 经过 schema 校验后的配置对象。
  * @throws 当配置存在但内容非法时抛出错误。
  */
-export function loadConfig(): CodexSwConfig {
+export function loadConfig(): CslotConfig {
   const configPath = getConfigPath();
-  const legacyConfigPath = path.join(os.homedir(), ".codexsw", "config.yaml");
 
   if (!fs.existsSync(configPath)) {
-    const defaultConfig: CodexSwConfig = {
+    const defaultApiKey = generateDefaultLocalApiKey();
+    const defaultConfig: CslotConfig = {
       version: 1,
       server: {
         host: "127.0.0.1",
         port: 4389,
-        api_key: "cslot-defaultkey",
+        api_key: defaultApiKey,
         body_limit_mb: 512
       },
       upstream: {
@@ -147,23 +152,16 @@ export function loadConfig(): CodexSwConfig {
   let changed = JSON.stringify(parsed) !== JSON.stringify(normalized);
 
   if (
-    normalized.accounts.length === 0 &&
-    fs.existsSync(legacyConfigPath)
+    (!parsed || typeof parsed !== "object" || !("server" in parsed)) ||
+    !(parsed.server && typeof parsed.server === "object" && "api_key" in parsed.server)
   ) {
-    const legacyRaw = fs.readFileSync(legacyConfigPath, "utf8");
-    const legacyParsed = legacyRaw.trim() ? YAML.parse(legacyRaw) : {};
-    const legacyConfig = configSchema.parse(legacyParsed);
-
-    if (legacyConfig.accounts.length > 0) {
-      normalized.accounts = legacyConfig.accounts;
-      changed = true;
-    }
+    normalized.server.api_key = generateDefaultLocalApiKey();
+    changed = true;
   }
 
   // 兼容历史默认值，统一迁移到新的简短本地 key。
   if (
-    normalized.server.api_key === "local-only-key" ||
-    normalized.server.api_key === "codexsw-defaultkey"
+    normalized.server.api_key === "local-only-key"
   ) {
     normalized.server.api_key = "cslot-defaultkey";
     changed = true;
@@ -184,7 +182,7 @@ export function loadConfig(): CodexSwConfig {
  * @returns 无返回值。
  * @throws 当配置写入失败时抛出文件系统错误。
  */
-export function saveConfig(config: CodexSwConfig): void {
+export function saveConfig(config: CslotConfig): void {
   const configPath = getConfigPath();
   const text = YAML.stringify(config);
   fs.writeFileSync(configPath, text, "utf8");
@@ -197,7 +195,7 @@ export function saveConfig(config: CodexSwConfig): void {
  * @returns 该账号对应的 HOME 目录绝对路径。
  */
 export function getManagedHome(accountId: string): string {
-  return path.join(getCodexSwHome(), "homes", accountId);
+  return path.join(getCslotHome(), "homes", accountId);
 }
 
 /**
@@ -206,7 +204,7 @@ export function getManagedHome(accountId: string): string {
  * @param account 待写入的账号配置。
  * @returns 更新后的完整配置对象。
  */
-export function upsertAccount(account: ManagedAccount): CodexSwConfig {
+export function upsertAccount(account: ManagedAccount): CslotConfig {
   const config = loadConfig();
   const index = config.accounts.findIndex((item) => item.id === account.id);
 

@@ -7,6 +7,7 @@ import {
 } from "./account-store";
 import { loadConfig } from "./config";
 import { getUsageCache, setUsageCache } from "./state";
+import { bi } from "./text";
 import type {
   CodexAuthFile,
   UsageRefreshResult
@@ -63,14 +64,14 @@ export async function refreshAccountTokens(accountId: string): Promise<CodexAuth
   const account = findManagedAccount(accountId);
 
   if (!account) {
-    throw new Error(`未找到账号 ${accountId}`);
+    throw new Error(bi(`未找到账号 ${accountId}`, `Account not found: ${accountId}`));
   }
 
   const auth = readAuthFile(account.codex_home);
   const refreshToken = auth?.tokens?.refresh_token;
 
   if (!refreshToken) {
-    throw new Error(`账号 ${accountId} 缺少 refresh_token`);
+    throw new Error(bi(`账号 ${accountId} 缺少 refresh_token`, `Account ${accountId} is missing refresh_token`));
   }
 
   const response = await request(`${config.upstream.auth_base_url}/oauth/token`, {
@@ -88,7 +89,7 @@ export async function refreshAccountTokens(accountId: string): Promise<CodexAuth
 
   if (response.statusCode >= 400) {
     const errorText = await response.body.text();
-    throw new Error(`刷新 token 失败: HTTP ${response.statusCode} ${errorText}`);
+    throw new Error(bi(`刷新 token 失败: HTTP ${response.statusCode} ${errorText}`, `Failed to refresh token: HTTP ${response.statusCode} ${errorText}`));
   }
 
   const payload = (await response.body.json()) as {
@@ -126,7 +127,7 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
   const account = findManagedAccount(accountId);
 
   if (!account) {
-    throw new Error(`未找到账号 ${accountId}`);
+    throw new Error(bi(`未找到账号 ${accountId}`, `Account not found: ${accountId}`));
   }
 
   const auth = readAuthFile(account.codex_home);
@@ -134,7 +135,7 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
   const accountIdHeader = auth?.tokens?.account_id;
 
   if (!accessToken) {
-    throw new Error(`账号 ${accountId} 缺少 access_token`);
+    throw new Error(bi(`账号 ${accountId} 缺少 access_token`, `Account ${accountId} is missing access_token`));
   }
 
   const response = await request("https://chatgpt.com/backend-api/wham/usage", {
@@ -154,7 +155,7 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
 
   if (response.statusCode >= 400) {
     const errorText = await response.body.text();
-    throw new Error(`刷新额度失败: HTTP ${response.statusCode} ${errorText}`);
+    throw new Error(bi(`刷新额度失败: HTTP ${response.statusCode} ${errorText}`, `Failed to refresh usage: HTTP ${response.statusCode} ${errorText}`));
   }
 
   const payload = (await response.body.json()) as WhamUsageResponse;
@@ -247,7 +248,7 @@ export async function refreshAllAccountUsage(): Promise<UsageRefreshResult[]> {
       results.push(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[refresh] ${account.id} 失败: ${message}`);
+      console.error(bi(`[refresh] ${account.id} 失败: ${message}`, `[refresh] ${account.id} failed: ${message}`));
     }
   }
 

@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getCodexSwHome } from "./config";
-import type { AccountBlockState, CodexSwState } from "./types";
+import { getCslotHome } from "./config";
+import type { AccountBlockState, CslotState, ManagedCodexConfigState } from "./types";
 
 function getStatePath(): string {
-  return path.join(getCodexSwHome(), "state.json");
+  return path.join(getCslotHome(), "state.json");
 }
 
 /**
@@ -12,27 +12,30 @@ function getStatePath(): string {
  *
  * @returns 当前持久化状态。
  */
-export function loadState(): CodexSwState {
+export function loadState(): CslotState {
   const statePath = getStatePath();
 
   if (!fs.existsSync(statePath)) {
     return {
       account_blocks: {},
-      usage_cache: {}
+      usage_cache: {},
+      managed_codex_config: null
     };
   }
 
   const raw = fs.readFileSync(statePath, "utf8");
   const parsed = raw.trim()
-    ? (JSON.parse(raw) as CodexSwState)
+    ? (JSON.parse(raw) as CslotState)
     : {
         account_blocks: {},
-        usage_cache: {}
+        usage_cache: {},
+        managed_codex_config: null
       };
 
   return {
     account_blocks: parsed.account_blocks ?? {},
-    usage_cache: parsed.usage_cache ?? {}
+    usage_cache: parsed.usage_cache ?? {},
+    managed_codex_config: parsed.managed_codex_config ?? null
   };
 }
 
@@ -42,7 +45,7 @@ export function loadState(): CodexSwState {
  * @param state 待写入状态对象。
  * @returns 无返回值。
  */
-export function saveState(state: CodexSwState): void {
+export function saveState(state: CslotState): void {
   const statePath = getStatePath();
   fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
@@ -70,7 +73,7 @@ export function setAccountBlock(accountId: string, until: number | null, reason:
  *
  * @returns 清理后的状态对象。
  */
-export function pruneExpiredBlocks(): CodexSwState {
+export function pruneExpiredBlocks(): CslotState {
   const state = loadState();
   const now = Math.floor(Date.now() / 1000);
   let changed = false;
@@ -121,4 +124,37 @@ export function setUsageCache(usage: import("./types").UsageRefreshResult): void
 export function getUsageCache(accountId: string): import("./types").UsageRefreshResult | null {
   const state = loadState();
   return state.usage_cache[accountId] ?? null;
+}
+
+/**
+ * 读取当前记录的 Codex `config.toml` 接管快照。
+ *
+ * @returns 最近一次接管时保存的快照；不存在时返回 `null`。
+ */
+export function getManagedCodexConfigState(): ManagedCodexConfigState | null {
+  const state = loadState();
+  return state.managed_codex_config ?? null;
+}
+
+/**
+ * 保存 Codex `config.toml` 接管快照，用于后续停止服务时精确恢复。
+ *
+ * @param managedState 接管前保存的原始片段快照。
+ * @returns 无返回值。
+ */
+export function setManagedCodexConfigState(managedState: ManagedCodexConfigState): void {
+  const state = loadState();
+  state.managed_codex_config = managedState;
+  saveState(state);
+}
+
+/**
+ * 清理 Codex `config.toml` 接管快照。
+ *
+ * @returns 无返回值。
+ */
+export function clearManagedCodexConfigState(): void {
+  const state = loadState();
+  state.managed_codex_config = null;
+  saveState(state);
 }

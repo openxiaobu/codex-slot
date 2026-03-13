@@ -4,6 +4,7 @@ import {
   resolvePrimaryRegistryAccount
 } from "./account-store";
 import { getAccountBlock, getUsageCache } from "./state";
+import { formatLocalDateTime } from "./text";
 import type { AccountRuntimeStatus } from "./types";
 
 interface StatusTableRenderOptions {
@@ -11,6 +12,12 @@ interface StatusTableRenderOptions {
     enabledById: Record<string, boolean>;
     cursorAccountId: string | null;
   };
+}
+
+export interface AccountStatusSummary {
+  available: number;
+  fiveHourLimited: number;
+  weeklyLimited: number;
 }
 
 function computeLeftPercent(usedPercent: number | null | undefined): number | null {
@@ -38,13 +45,7 @@ function formatPercent(value: number | null): string {
 }
 
 function formatReset(unixSeconds: number | null): string {
-  if (!unixSeconds) {
-    return "-";
-  }
-
-  return new Date(unixSeconds * 1000).toLocaleString("zh-CN", {
-    hour12: false
-  });
+  return formatLocalDateTime(unixSeconds);
 }
 
 function formatLimitStatus(label: string, resetAt: number | null): string {
@@ -166,6 +167,22 @@ export function collectAccountStatuses(): AccountRuntimeStatus[] {
       sourcePath: account.codex_home
     };
   });
+}
+
+/**
+ * 根据账号运行时状态汇总可用数与额度受限数，供 CLI 统一展示摘要。
+ *
+ * @param statuses 账号运行时状态列表。
+ * @returns 汇总后的数量统计。
+ */
+export function summarizeAccountStatuses(statuses: AccountRuntimeStatus[]): AccountStatusSummary {
+  return {
+    available: statuses.filter((item) => item.isAvailable).length,
+    fiveHourLimited: statuses.filter(
+      (item) => item.isFiveHourLimited && !item.isWeeklyLimited
+    ).length,
+    weeklyLimited: statuses.filter((item) => item.isWeeklyLimited).length
+  };
 }
 
 /**
