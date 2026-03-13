@@ -38,8 +38,8 @@ function configureRootProgram(program: Command): void {
       "",
       `${bi("说明", "Notes")}:`,
       `  ${bi(
-        "`import current ~` 里的 current 只是示例槽位名，不是内置账号。",
-        "`current` in `import current ~` is only an example slot name, not a built-in account."
+        "`import current ~` 里的 current 只是示例槽位名，不是内置账号或工作空间。",
+        "`current` in `import current ~` is only an example slot name, not a built-in account or workspace."
       )}`
     ].join("\n")
   );
@@ -56,15 +56,15 @@ function registerAccountCommands(program: Command): void {
   program
     .command("add")
     .description(bi("登录并新增一个账号或工作空间", "Login and add a managed slot"))
-    .argument("<name>", bi("账号标识（本地槽位名）", "Local slot name"))
+    .argument("<name>", bi("账号或工作空间标识（本地槽位名）", "Managed slot name"))
     .action(async (name: string) => {
       await handleAccountLogin(name);
     });
 
   program
     .command("del")
-    .description(bi("删除一个已录入账号", "Remove a managed slot"))
-    .argument("[name]", bi("账号标识（本地槽位名），留空时列出全部", "Local slot name"))
+    .description(bi("删除一个已录入账号或工作空间", "Remove a managed slot"))
+    .argument("[name]", bi("账号或工作空间标识（本地槽位名），留空时列出全部", "Managed slot name"))
     .action(handleAccountRemoveCommand);
 
   program
@@ -75,7 +75,7 @@ function registerAccountCommands(program: Command): void {
         "Import official Codex auth state from the current or specified HOME"
       )
     )
-    .argument("<name>", bi("账号标识（本地槽位名，例如 work/current）", "Local slot name, for example work/current"))
+    .argument("<name>", bi("账号或工作空间标识（本地槽位名，例如 work/current）", "Managed slot name, for example work/current"))
     .argument("[codexHome]", bi("已有 HOME 目录，默认当前用户 HOME", "Source HOME, defaults to the current user HOME"))
     .addHelpText(
       "after",
@@ -92,9 +92,9 @@ function registerAccountCommands(program: Command): void {
 
   program
     .command("rename")
-    .description(bi("重命名一个已录入账号", "Rename a managed slot"))
-    .argument("<oldName>", bi("原槽位名", "Old slot name"))
-    .argument("<newName>", bi("新槽位名", "New slot name"))
+    .description(bi("重命名一个已录入账号或工作空间", "Rename a managed slot"))
+    .argument("<oldName>", bi("原账号或工作空间标识", "Old managed slot name"))
+    .argument("<newName>", bi("新账号或工作空间标识", "New managed slot name"))
     .action(handleAccountRename);
 }
 
@@ -124,8 +124,8 @@ function registerRuntimeCommands(program: Command): void {
         "",
         `${bi("说明", "Notes")}:`,
         `  ${bi(
-          "start 会自动接管 `~/.codex/config.toml`，并在指定端口时自动写入该端口；stop 会恢复接管前内容。",
-          "`start` will manage `~/.codex/config.toml` automatically, write the specified port when provided, and `stop` will restore the previous content."
+          "start 会自动接管 `~/.codex/config.toml`；默认优先使用 4399，冲突时自动顺延；每次启动都会重新生成本地 api_key；指定端口时会写入该端口；stop 会恢复接管前内容。",
+          "`start` will manage `~/.codex/config.toml` automatically; it prefers 4399 by default, switches to the next free port on conflict, generates a fresh local api_key on every start, writes the specified port when provided, and `stop` restores the previous content."
         )}`,
       ].join("\n")
     )

@@ -37,7 +37,7 @@ codex-slot import current ~
 ```
 
 `import` copies the official login state into `~/.cslot/homes/<name>` instead of referencing the source HOME directly.
-`current` is only an example slot name, not a built-in account.
+`current` is only an example slot name, not a built-in account or workspace.
 
 2. Check the latest usage:
 
@@ -70,7 +70,9 @@ codex-slot start
 codex-slot start --port 4399
 ```
 
-`start` will automatically write the required provider config into `~/.codex/config.toml`:
+`start` will automatically write the required provider config into `~/.codex/config.toml`.
+It prefers port `4399` by default and will switch to the next available port automatically when `4399` is busy:
+Each start also generates a fresh local `api_key` and syncs it into the managed provider config.
 
 ```bash
 codex-slot start
@@ -127,7 +129,7 @@ Instead it:
 ```toml
 [model_providers.cslot]
 name = "cslot"
-base_url = "http://127.0.0.1:4389/v1"
+base_url = "http://127.0.0.1:4399/v1"
 http_headers = { Authorization = "Bearer <your-local-api-key>" }
 wire_api = "responses"
 ```
@@ -138,6 +140,8 @@ Behavior:
 - On `cslot stop`, the original `model_provider` line and original `[model_providers.cslot]` block are restored from the saved snapshot
 - Other providers and settings in `config.toml` are left untouched
 - If you start with `--port`, the port is saved to `~/.cslot/config.yaml`
+- If you start without `--port`, `4399` is preferred first and the next free port is chosen automatically on conflict
+- Every `start` rotates the local `api_key`, and the new value is written to both `~/.cslot/config.yaml` and the managed provider block
 
 ## Data Directory
 

@@ -11,7 +11,7 @@ import { bi } from "./text";
  */
 export async function handleStart(portOverride?: string): Promise<void> {
   const config = loadConfig();
-  const result = startManagedService(portOverride);
+  const result = await startManagedService(portOverride);
 
   if (result.alreadyRunning) {
     console.log(bi(`服务已在运行，PID=${result.pid}`, `Service is already running. PID=${result.pid}`));
@@ -25,6 +25,24 @@ export async function handleStart(portOverride?: string): Promise<void> {
       );
     }
     return;
+  }
+
+  if (result.autoSwitched) {
+    console.log(
+      bi(
+        `默认端口 4399 已被占用，已自动切换到 ${result.port}`,
+        `Default port 4399 is busy. Automatically switched to ${result.port}`
+      )
+    );
+  }
+
+  if (result.apiKeyRotated) {
+    console.log(
+      bi(
+        "本次启动已重新生成本地 api_key，并同步写入受管配置。",
+        "A new local api_key was generated for this start and synced to the managed config."
+      )
+    );
   }
 
   console.log(bi(`服务已启动: http://${config.server.host}:${result.port}`, `Service started: http://${config.server.host}:${result.port}`));

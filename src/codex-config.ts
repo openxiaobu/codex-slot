@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { expandHome, loadConfig } from "./config";
@@ -8,7 +7,7 @@ import {
   setManagedCodexConfigState
 } from "./state";
 import { bi } from "./text";
-import type { ManagedCodexConfigState } from "./types";
+import type { CslotConfig, ManagedCodexConfigState } from "./types";
 
 const MODEL_PROVIDER_START_MARKER = "# >>> cslot model_provider >>>";
 const MODEL_PROVIDER_END_MARKER = "# <<< cslot model_provider <<<";
@@ -22,15 +21,6 @@ const PROVIDER_BLOCK_END_MARKER = "# <<< cslot provider:cslot <<<";
  */
 export function getDefaultCodexConfigPath(): string {
   return path.join(process.env.HOME ?? "", ".codex", "config.toml");
-}
-
-/**
- * 生成随机本地 API Key，避免继续使用固定默认值。
- *
- * @returns 新的 API Key 字符串，仅包含十六进制字符。
- */
-export function generateServerApiKey(): string {
-  return `cslot-${crypto.randomBytes(18).toString("hex")}`;
 }
 
 /**
@@ -79,8 +69,7 @@ function buildManagedModelProviderBlock(eol: string): string {
  * @param eol 目标文件当前使用的换行符。
  * @returns 带标记的 provider 配置块文本。
  */
-function buildManagedProviderBlock(eol: string): string {
-  const config = loadConfig();
+function buildManagedProviderBlock(eol: string, config: CslotConfig): string {
 
   return [
     PROVIDER_BLOCK_START_MARKER,
@@ -316,7 +305,7 @@ function insertBlockBetween(before: string, block: string, after: string, eol: s
  */
 export function applyManagedCodexConfig(
   targetPathOrDir?: string,
-  options?: { silent?: boolean }
+  options?: { silent?: boolean; config?: CslotConfig }
 ): string {
   const rawTarget = targetPathOrDir ? expandHome(targetPathOrDir) : getDefaultCodexConfigPath();
   const targetFile = rawTarget.endsWith(".toml") ? rawTarget : path.join(rawTarget, "config.toml");
@@ -335,10 +324,11 @@ export function applyManagedCodexConfig(
     original_model_provider_block: originalModelProviderLine?.value ?? null,
     original_cslot_provider_block: originalProviderSection?.value ?? null
   };
+  const config = options?.config ?? loadConfig();
 
   let nextContent = baseContent;
   const managedModelProviderBlock = buildManagedModelProviderBlock(eol);
-  const managedProviderBlock = buildManagedProviderBlock(eol);
+  const managedProviderBlock = buildManagedProviderBlock(eol, config);
 
   // 先处理 provider 表块，再处理 model_provider 行，避免前面的插入导致后续偏移失效。
   if (originalProviderSection) {
@@ -380,7 +370,6 @@ export function applyManagedCodexConfig(
   setManagedCodexConfigState(snapshot);
 
   if (!options?.silent) {
-    const config = loadConfig();
     console.log(bi(`已写入: ${targetFile}`, `Written to: ${targetFile}`));
     console.log(`base_url=http://${config.server.host}:${config.server.port}/v1`);
     console.log(`api_key=${config.server.api_key}`);

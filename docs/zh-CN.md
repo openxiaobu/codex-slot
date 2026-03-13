@@ -37,7 +37,7 @@ codex-slot import current ~
 ```
 
 `import` 会把官方登录态复制到 `~/.cslot/homes/<name>`，而不是直接引用原始 HOME。
-这里的 `current` 只是示例槽位名，不是系统内置账号。
+这里的 `current` 只是示例槽位名，不是系统内置账号或工作空间。
 
 2. 查看最新额度：
 
@@ -64,7 +64,9 @@ codex-slot start
 codex-slot start --port 4399
 ```
 
-`start` 会自动把需要的 provider 配置写入 `~/.codex/config.toml`：
+`start` 会自动把需要的 provider 配置写入 `~/.codex/config.toml`。
+默认优先使用 `4399`，如果该端口被占用，会自动切换到下一个可用端口：
+每次启动还会重新生成一个新的本地 `api_key`，并同步写入受管 provider 配置。
 
 ```bash
 codex-slot start
@@ -126,7 +128,7 @@ codex-slot stop
 ```toml
 [model_providers.cslot]
 name = "cslot"
-base_url = "http://127.0.0.1:4389/v1"
+base_url = "http://127.0.0.1:4399/v1"
 http_headers = { Authorization = "Bearer <你的本地-api-key>" }
 wire_api = "responses"
 ```
@@ -138,6 +140,8 @@ wire_api = "responses"
 - `config.toml` 里其他 provider 和配置保持不变
 - 全局 `model` 不会改
 - 如果通过 `cslot start --port <端口>` 指定端口，会把端口写入 `~/.cslot/config.yaml`
+- 如果不指定端口，会优先尝试 `4399`，冲突时自动顺延到下一个空闲端口
+- 每次 `start` 都会轮换本地 `api_key`，并把新值同时写入 `~/.cslot/config.yaml` 与受管 provider 配置块
 
 ## 本地目录
 
