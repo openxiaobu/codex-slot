@@ -3,7 +3,7 @@ import {
   hasCompleteCodexAuthState,
   resolvePrimaryRegistryAccount
 } from "./account-store";
-import { getAccountBlock, getUsageCache } from "./state";
+import { getAccountBlock, getUsageCache, getUsageRefreshError } from "./state";
 import { formatLocalDateTime } from "./text";
 import type { AccountRuntimeStatus } from "./types";
 
@@ -12,6 +12,8 @@ interface StatusTableRenderOptions {
     enabledById: Record<string, boolean>;
     cursorAccountId: string | null;
   };
+  compact?: boolean;
+  maxWidth?: number;
 }
 
 export interface AccountStatusSummary {
@@ -48,6 +50,83 @@ function formatReset(unixSeconds: number | null): string {
   return formatLocalDateTime(unixSeconds);
 }
 
+/**
+ * 按给定最大宽度截断单元格文本，优先保证表格整体不换行。
+ *
+ * @param value 原始文本。
+ * @param maxWidth 最大宽度。
+ * @returns 截断后的文本；宽度过小时退化为最短可读形式。
+ */
+function truncateCell(value: string, maxWidth: number): string {
+  if (maxWidth <= 0) {
+    return "";
+  }
+
+  if (value.length <= maxWidth) {
+    return value;
+  }
+
+  if (maxWidth <= 2) {
+    return value.slice(0, maxWidth);
+  }
+
+  return `${value.slice(0, maxWidth - 1)}…`;
+}
+
+/**
+ * 生成固定标签宽度的详情行，超出终端宽度时自动截断值部分。
+ *
+ * @param label 字段标签。
+ * @param value 字段值。
+ * @param maxWidth 当前可用最大宽度。
+ * @returns 单行详情文本。
+ */
+function formatDetailLine(label: string, value: string, maxWidth: number): string {
+  const prefix = `${label.padEnd(6)} `;
+  const safeWidth = Number.isFinite(maxWidth) ? maxWidth : prefix.length + value.length;
+  const valueWidth = Math.max(8, safeWidth - prefix.length);
+
+  return `${prefix}${truncateCell(value, valueWidth)}`;
+}
+
+/**
+ * 将状态对象归一化为单个紧凑状态标签，供表格与详情面板复用。
+ *
+ * @param item 单个账号状态。
+ * @returns 适合在终端展示的状态标签。
+ */
+function resolveStatusLabel(item: AccountRuntimeStatus): string {
+  if (item.refreshErrorCode) {
+    return item.refreshErrorCode;
+  }
+
+  if (!item.exists) {
+    return "missing";
+  }
+
+  if (!item.enabled) {
+    return "disabled";
+  }
+
+  if (item.localBlockUntil && item.localBlockUntil * 1000 > Date.now()) {
+    return formatBlockedStatus(item.localBlockReason, item.localBlockUntil);
+  }
+
+  if (item.isWeeklyLimited) {
+    return formatLimitStatus("weekly_limited", item.weeklyResetsAt);
+  }
+
+  if (item.isFiveHourLimited) {
+    return formatLimitStatus("5h_limited", item.fiveHourResetsAt);
+  }
+
+  if (item.isAvailable) {
+    return "available";
+  }
+
+  return "unknown";
+}
+
 function formatLimitStatus(label: string, resetAt: number | null): string {
   const remaining = formatRemainingDuration(resetAt);
 
@@ -68,6 +147,58 @@ function normalizeBlockReason(reason: string | undefined): string {
   }
 
   return reason;
+}
+
+/**
+ * 将账号工作空间读取异常统一归类为状态码，避免状态汇总阶段直接抛出异常中断整个命令。
+ *
+ * @param error 工作空间读取过程中抛出的异常。
+ * @returns 归一化后的状态码与错误摘要。
+ */
+function classifyWorkspaceStatusError(
+  error: unknown
+): { code: string; message: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    code: "workspace_invalid",
+    message
+  };
+}
+
+/**
+ * 读取账号工作空间的本地登录态摘要；若目录损坏或 JSON 非法，则降级为工作空间不可用状态。
+ *
+ * @param codexHome 账号隔离 HOME 目录。
+ * @returns 是否存在完整登录态、主账号信息以及可选的工作空间错误状态。
+ */
+function readWorkspaceSnapshot(
+  codexHome: string
+): {
+  exists: boolean;
+  primary: ReturnType<typeof resolvePrimaryRegistryAccount>;
+  workspaceErrorCode: string | null;
+  workspaceErrorMessage: string | null;
+} {
+  try {
+    const exists = hasCompleteCodexAuthState(codexHome);
+    const primary = exists ? resolvePrimaryRegistryAccount(codexHome) : null;
+
+    return {
+      exists,
+      primary,
+      workspaceErrorCode: null,
+      workspaceErrorMessage: null
+    };
+  } catch (error) {
+    const workspaceError = classifyWorkspaceStatusError(error);
+
+    return {
+      exists: false,
+      primary: null,
+      workspaceErrorCode: workspaceError.code,
+      workspaceErrorMessage: workspaceError.message
+    };
+  }
 }
 
 /**
@@ -128,10 +259,10 @@ export function collectAccountStatuses(): AccountRuntimeStatus[] {
   const config = loadConfig();
 
   return config.accounts.map((account) => {
-    const exists = hasCompleteCodexAuthState(account.codex_home);
-    const primary = exists ? resolvePrimaryRegistryAccount(account.codex_home) : null;
+    const workspace = readWorkspaceSnapshot(account.codex_home);
     const usageCache = getUsageCache(account.id);
-    const activeEmail = usageCache?.email ?? primary?.email ?? account.email;
+    const refreshError = getUsageRefreshError(account.id);
+    const activeEmail = usageCache?.email ?? workspace.primary?.email ?? account.email;
     const fiveHourUsed = usageCache?.fiveHourUsedPercent ?? null;
     const fiveHourReset = usageCache?.fiveHourResetAt ?? null;
     const weeklyUsed = usageCache?.weeklyUsedPercent ?? null;
@@ -142,14 +273,17 @@ export function collectAccountStatuses(): AccountRuntimeStatus[] {
     const isWeeklyLimited = isLimited(weeklyUsed, weeklyReset);
     const localBlock = getAccountBlock(account.id);
     const localBlocked = localBlock?.until != null ? localBlock.until * 1000 > Date.now() : false;
+    const refreshErrorCode = workspace.workspaceErrorCode ?? refreshError?.code ?? null;
+    const refreshErrorMessage =
+      workspace.workspaceErrorMessage ?? refreshError?.message ?? null;
 
     return {
       id: account.id,
       name: account.name,
       email: activeEmail,
       enabled: account.enabled,
-      exists,
-      plan: usageCache?.plan ?? primary?.plan ?? "-",
+      exists: workspace.exists,
+      plan: usageCache?.plan ?? workspace.primary?.plan ?? "-",
       fiveHourLeftPercent,
       fiveHourResetsAt: fiveHourReset,
       weeklyLeftPercent,
@@ -158,9 +292,12 @@ export function collectAccountStatuses(): AccountRuntimeStatus[] {
       isWeeklyLimited,
       localBlockReason: localBlock?.reason,
       localBlockUntil: localBlock?.until ?? null,
+      refreshErrorCode,
+      refreshErrorMessage,
       isAvailable:
         account.enabled &&
-        exists &&
+        workspace.exists &&
+        !refreshErrorCode &&
         !isFiveHourLimited &&
         !isWeeklyLimited &&
         !localBlocked,
@@ -197,38 +334,37 @@ export function renderStatusTable(
   options?: StatusTableRenderOptions
 ): string {
   const selectorColumn = options?.selectorColumn;
+  const compact = options?.compact ?? false;
+  const maxWidth = options?.maxWidth ?? Number.POSITIVE_INFINITY;
+  const compactHeader = maxWidth < 68;
+  const compactSlotWidth = maxWidth < 56 ? 8 : 12;
+  const compactPlanWidth = maxWidth < 56 ? 4 : 6;
+  const compactStatusWidth = maxWidth < 56 ? 12 : 18;
   const rows = [
-    [
-      ...(selectorColumn ? [" "] : []),
-      "NAME",
-      "EMAIL",
-      "PLAN",
-      "5H_LEFT",
-      "5H_RESET",
-      "WEEK_LEFT",
-      "WEEK_RESET",
-      "STATUS"
-    ]
+    compact
+      ? [
+          ...(selectorColumn ? [" "] : []),
+          compactHeader ? "ID" : "SLOT",
+          compactHeader ? "P" : "PLAN",
+          "5H",
+          compactHeader ? "WK" : "WEEK",
+          compactHeader ? "ST" : "STATUS"
+        ]
+      : [
+          ...(selectorColumn ? [" "] : []),
+          "NAME",
+          "EMAIL",
+          "PLAN",
+          "5H_LEFT",
+          "5H_RESET",
+          "WEEK_LEFT",
+          "WEEK_RESET",
+          "STATUS"
+        ]
   ];
 
   for (const item of statuses) {
-    let status = "missing";
-
-    if (item.exists) {
-      if (!item.enabled) {
-        status = "disabled";
-      } else if (item.localBlockUntil && item.localBlockUntil * 1000 > Date.now()) {
-        status = formatBlockedStatus(item.localBlockReason, item.localBlockUntil);
-      } else if (item.isWeeklyLimited) {
-        status = formatLimitStatus("weekly_limited", item.weeklyResetsAt);
-      } else if (item.isFiveHourLimited) {
-        status = formatLimitStatus("5h_limited", item.fiveHourResetsAt);
-      } else if (item.isAvailable) {
-        status = "available";
-      } else {
-        status = "unknown";
-      }
-    }
+    const status = resolveStatusLabel(item);
 
     const selectorCell = selectorColumn
       ? `${selectorColumn.cursorAccountId === item.id ? ">" : " "}[${
@@ -236,17 +372,28 @@ export function renderStatusTable(
         }]`
       : null;
 
-    rows.push([
-      ...(selectorCell ? [selectorCell] : []),
-      item.name,
-      item.email ?? "-",
-      item.plan,
-      formatPercent(item.fiveHourLeftPercent),
-      formatReset(item.fiveHourResetsAt),
-      formatPercent(item.weeklyLeftPercent),
-      formatReset(item.weeklyResetsAt),
-      status
-    ]);
+    rows.push(
+      compact
+        ? [
+            ...(selectorCell ? [selectorCell] : []),
+            truncateCell(item.name, compactSlotWidth),
+            truncateCell(item.plan, compactPlanWidth),
+            formatPercent(item.fiveHourLeftPercent),
+            formatPercent(item.weeklyLeftPercent),
+            truncateCell(status, compactStatusWidth)
+          ]
+        : [
+            ...(selectorCell ? [selectorCell] : []),
+            item.name,
+            item.email ?? "-",
+            item.plan,
+            formatPercent(item.fiveHourLeftPercent),
+            formatReset(item.fiveHourResetsAt),
+            formatPercent(item.weeklyLeftPercent),
+            formatReset(item.weeklyResetsAt),
+            status
+          ]
+    );
   }
 
   const widths = rows[0].map((_, columnIndex) =>
@@ -256,4 +403,63 @@ export function renderStatusTable(
   return rows
     .map((row) => row.map((cell, index) => cell.padEnd(widths[index])).join("  "))
     .join("\n");
+}
+
+/**
+ * 将当前选中账号渲染为紧凑详情区，补充主表中省略的邮箱、重置时间与错误摘要。
+ *
+ * @param item 当前选中的账号状态；为空时返回占位提示。
+ * @param options 详情区渲染选项。
+ * @returns 适合直接打印的详情区文本。
+ */
+export function renderStatusDetails(
+  item: AccountRuntimeStatus | null,
+  options?: { maxWidth?: number }
+): string {
+  if (!item) {
+    return ["[ current ]", "slot   -"].join("\n");
+  }
+
+  const maxWidth = options?.maxWidth ?? Number.POSITIVE_INFINITY;
+  const narrow = maxWidth < 72;
+  const lines = [
+    "[ current ]",
+    formatDetailLine("slot", `${item.name}  plan=${item.plan}`, maxWidth),
+    formatDetailLine("email", item.email ?? "-", maxWidth),
+    formatDetailLine("status", resolveStatusLabel(item), maxWidth),
+    narrow
+      ? formatDetailLine(
+          "5h",
+          `${formatPercent(item.fiveHourLeftPercent)}  reset=${formatReset(item.fiveHourResetsAt)}`,
+          maxWidth
+        )
+      : formatDetailLine(
+          "5h",
+          `${formatPercent(item.fiveHourLeftPercent)}  reset=${formatReset(item.fiveHourResetsAt)}`,
+          maxWidth
+        ),
+    narrow
+      ? formatDetailLine(
+          "week",
+          `${formatPercent(item.weeklyLeftPercent)}  reset=${formatReset(item.weeklyResetsAt)}`,
+          maxWidth
+        )
+      : formatDetailLine(
+          "week",
+          `${formatPercent(item.weeklyLeftPercent)}  reset=${formatReset(item.weeklyResetsAt)}`,
+          maxWidth
+        )
+  ];
+
+  if (item.refreshErrorMessage) {
+    lines.push(
+      formatDetailLine(
+        "error",
+        item.refreshErrorMessage,
+        narrow ? Math.max(28, maxWidth) : Math.min(maxWidth, 96)
+      )
+    );
+  }
+
+  return lines.join("\n");
 }

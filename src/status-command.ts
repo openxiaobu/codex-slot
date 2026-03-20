@@ -8,6 +8,7 @@ import {
 import { pickBestAccount } from "./scheduler";
 import {
   collectAccountStatuses,
+  renderStatusDetails,
   renderStatusTable,
   summarizeAccountStatuses
 } from "./status";
@@ -17,6 +18,89 @@ import type { AccountRuntimeStatus } from "./types";
 
 export interface StatusCommandOptions {
   interactive?: boolean;
+}
+
+const ANSI = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  cyan: "\x1b[36m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m"
+} as const;
+
+/**
+ * 判断当前终端是否适合启用 ANSI 样式，避免在 dumb/no-color 环境输出控制字符。
+ *
+ * @returns 可安全启用样式时返回 `true`，否则返回 `false`。
+ * @throws 无显式抛出。
+ */
+function shouldUseAnsiStyle(): boolean {
+  return Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined && process.env.TERM !== "dumb";
+}
+
+/**
+ * 对文本应用 ANSI 样式；当样式关闭时原样返回。
+ *
+ * @param text 原始文本。
+ * @param color ANSI 颜色码。
+ * @param enabled 是否启用 ANSI 样式。
+ * @returns 样式化后的文本或原文。
+ * @throws 无显式抛出。
+ */
+function paint(text: string, color: string, enabled: boolean): string {
+  if (!enabled) {
+    return text;
+  }
+
+  return `${color}${text}${ANSI.reset}`;
+}
+
+/**
+ * 渲染分区标题行，兼容窄终端与普通宽度终端。
+ *
+ * @param title 分区标题文本。
+ * @param width 当前终端宽度。
+ * @param styled 是否启用 ANSI 样式。
+ * @returns 可直接打印的单行分区标题。
+ * @throws 无显式抛出。
+ */
+function renderSectionHeader(title: string, width: number, styled: boolean): string {
+  if (width < 44) {
+    return paint(`[ ${title} ]`, ANSI.cyan, styled);
+  }
+
+  const plainLabel = ` ${title} `;
+  const targetWidth = Math.max(plainLabel.length + 2, Math.min(width, 96));
+  const side = Math.max(1, Math.floor((targetWidth - plainLabel.length) / 2));
+  const line = `${"-".repeat(side)}${plainLabel}${"-".repeat(side)}`;
+
+  return paint(line.slice(0, targetWidth), ANSI.cyan, styled);
+}
+
+/**
+ * 渲染摘要区可读性更高的计数文本，并对关键指标做轻量着色。
+ *
+ * @param summary 状态摘要计数。
+ * @param narrowScreen 是否窄屏布局。
+ * @param styled 是否启用 ANSI 样式。
+ * @returns 摘要展示文本。
+ * @throws 无显式抛出。
+ */
+function renderSummaryLine(
+  summary: { available: number; fiveHourLimited: number; weeklyLimited: number },
+  narrowScreen: boolean,
+  styled: boolean
+): string {
+  const available = paint(String(summary.available), ANSI.green, styled);
+  const fiveHourLimited = paint(String(summary.fiveHourLimited), ANSI.yellow, styled);
+  const weeklyLimited = paint(String(summary.weeklyLimited), ANSI.yellow, styled);
+
+  if (narrowScreen) {
+    return `ok=${available}  5h=${fiveHourLimited}  wk=${weeklyLimited}`;
+  }
+
+  return `available=${available}  5h_limited=${fiveHourLimited}  weekly_limited=${weeklyLimited}`;
 }
 
 /**
@@ -133,6 +217,9 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
     let closed = false;
 
     const render = () => {
+      const screenWidth = process.stdout.columns ?? 80;
+      const narrowScreen = screenWidth < 72;
+      const styled = shouldUseAnsiStyle();
       const latestSnapshot = getStatusSnapshot();
       const statusSource = changed ? latestSnapshot.statuses : (initialStatuses ?? latestSnapshot.statuses);
       const statusById = new Map(statusSource.map((item) => [item.id, item]));
@@ -152,21 +239,29 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
           };
         })
         .filter((item): item is AccountRuntimeStatus => item !== null);
+      const currentItem = displayStatuses.find((item) => item.id === accounts[cursor]?.id) ?? null;
 
       renderInteractiveScreen([
+        renderSectionHeader("accounts", screenWidth, styled),
         renderStatusTable(displayStatuses, {
+          compact: true,
+          maxWidth: screenWidth,
           selectorColumn: {
             enabledById: Object.fromEntries(accounts.map((account) => [account.id, account.enabled])),
             cursorAccountId: accounts[cursor]?.id ?? null
           }
         }),
         "",
-        `available=${summary.available} 5h_limited=${summary.fiveHourLimited} weekly_limited=${summary.weeklyLimited}`,
+        renderStatusDetails(currentItem, { maxWidth: screenWidth }),
+        "",
+        renderSectionHeader("summary", screenWidth, styled),
+        renderSummaryLine(summary, narrowScreen, styled),
         `selected=${latestSnapshot.selectedName ?? "none"}`,
         "",
+        renderSectionHeader("help", screenWidth, styled),
         bi(
-          "空格切换当前行启用状态，Enter / q 退出。",
-          "Press Space to toggle the current row, Enter or q to exit."
+          narrowScreen ? "Space 切换，Enter / q 退出。" : "Space 切换启用状态，Enter / q 退出。",
+          narrowScreen ? "Space toggles, Enter or q exits." : "Space toggles enabled state, Enter or q exits."
         )
       ]);
     };

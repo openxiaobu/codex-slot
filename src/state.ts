@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getCslotHome } from "./config";
-import type { AccountBlockState, CslotState, ManagedCodexConfigState } from "./types";
+import type {
+  AccountBlockState,
+  CslotState,
+  ManagedCodexConfigState,
+  UsageRefreshError,
+  UsageRefreshResult
+} from "./types";
 
 function getStatePath(): string {
   return path.join(getCslotHome(), "state.json");
@@ -19,6 +25,7 @@ export function loadState(): CslotState {
     return {
       account_blocks: {},
       usage_cache: {},
+      usage_refresh_errors: {},
       managed_codex_config: null
     };
   }
@@ -29,12 +36,14 @@ export function loadState(): CslotState {
     : {
         account_blocks: {},
         usage_cache: {},
+        usage_refresh_errors: {},
         managed_codex_config: null
       };
 
   return {
     account_blocks: parsed.account_blocks ?? {},
     usage_cache: parsed.usage_cache ?? {},
+    usage_refresh_errors: parsed.usage_refresh_errors ?? {},
     managed_codex_config: parsed.managed_codex_config ?? null
   };
 }
@@ -121,9 +130,49 @@ export function setUsageCache(usage: import("./types").UsageRefreshResult): void
  * @param accountId 账号标识。
  * @returns 最新额度缓存；不存在时返回 `null`。
  */
-export function getUsageCache(accountId: string): import("./types").UsageRefreshResult | null {
+export function getUsageCache(accountId: string): UsageRefreshResult | null {
   const state = loadState();
   return state.usage_cache[accountId] ?? null;
+}
+
+/**
+ * 记录指定账号最近一次额度刷新失败的状态，供 `status` 命令渲染为账号状态而不是直接打印异常。
+ *
+ * @param usageError 刷新失败信息，包含账号、状态码与原始错误摘要。
+ * @returns 无返回值。
+ */
+export function setUsageRefreshError(usageError: UsageRefreshError): void {
+  const state = loadState();
+  state.usage_refresh_errors[usageError.accountId] = usageError;
+  saveState(state);
+}
+
+/**
+ * 清理指定账号最近一次记录的额度刷新失败状态，避免后续成功刷新后继续展示旧错误。
+ *
+ * @param accountId 账号标识。
+ * @returns 无返回值。
+ */
+export function clearUsageRefreshError(accountId: string): void {
+  const state = loadState();
+
+  if (!(accountId in state.usage_refresh_errors)) {
+    return;
+  }
+
+  delete state.usage_refresh_errors[accountId];
+  saveState(state);
+}
+
+/**
+ * 读取指定账号最近一次记录的额度刷新失败状态。
+ *
+ * @param accountId 账号标识。
+ * @returns 刷新失败信息；若不存在则返回 `null`。
+ */
+export function getUsageRefreshError(accountId: string): UsageRefreshError | null {
+  const state = loadState();
+  return state.usage_refresh_errors[accountId] ?? null;
 }
 
 /**

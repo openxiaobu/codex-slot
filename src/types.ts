@@ -88,6 +88,8 @@ export interface AccountRuntimeStatus {
   isWeeklyLimited: boolean;
   localBlockReason?: string;
   localBlockUntil?: number | null;
+  refreshErrorCode?: string | null;
+  refreshErrorMessage?: string | null;
   isAvailable: boolean;
   sourcePath: string;
 }
@@ -114,6 +116,13 @@ export interface UsageRefreshResult {
   refreshedAt: string;
 }
 
+export interface UsageRefreshError {
+  accountId: string;
+  code: string;
+  message: string;
+  updatedAt: string;
+}
+
 export interface AccountBlockState {
   until: number | null;
   reason: string;
@@ -123,11 +132,15 @@ export interface AccountBlockState {
 export interface ManagedCodexConfigState {
   target_file: string;
   original_model_provider_block: string | null;
+  original_model_provider_next_table_header?: string | null;
   original_cslot_provider_block: string | null;
+  original_cslot_provider_previous_table_header?: string | null;
+  original_cslot_provider_next_table_header?: string | null;
 }
 
 export interface CslotState {
   account_blocks: Record<string, AccountBlockState>;
   usage_cache: Record<string, UsageRefreshResult>;
+  usage_refresh_errors: Record<string, UsageRefreshError>;
   managed_codex_config?: ManagedCodexConfigState | null;
 }

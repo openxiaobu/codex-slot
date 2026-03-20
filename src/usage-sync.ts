@@ -6,10 +6,16 @@ import {
   writeAuthFile
 } from "./account-store";
 import { loadConfig } from "./config";
-import { getUsageCache, setUsageCache } from "./state";
+import {
+  clearUsageRefreshError,
+  getUsageCache,
+  setUsageCache,
+  setUsageRefreshError
+} from "./state";
 import { bi } from "./text";
 import type {
   CodexAuthFile,
+  UsageRefreshError,
   UsageRefreshResult
 } from "./types";
 
@@ -50,6 +56,34 @@ function normalizeResetAt(value?: number, resetAfterSeconds?: number): number | 
   }
 
   return null;
+}
+
+/**
+ * 将额度刷新异常归类为可直接展示在 `status` 表格中的状态码。
+ *
+ * @param accountId 刷新失败的账号标识。
+ * @param error 刷新流程抛出的原始异常。
+ * @returns 归一化后的刷新失败状态。
+ */
+function classifyUsageRefreshError(accountId: string, error: unknown): UsageRefreshError {
+  const message = error instanceof Error ? error.message : String(error);
+  const workspaceInvalidPatterns = [
+    "未找到账号",
+    "缺少 access_token",
+    "缺少 refresh_token",
+    "Unexpected end of JSON input",
+    "Unexpected token"
+  ];
+  const code = workspaceInvalidPatterns.some((pattern) => message.includes(pattern))
+    ? "workspace_invalid"
+    : "refresh_failed";
+
+  return {
+    accountId,
+    code,
+    message,
+    updatedAt: new Date().toISOString()
+  };
 }
 
 /**
@@ -180,6 +214,7 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
   };
 
   setUsageCache(result);
+  clearUsageRefreshError(accountId);
   return result;
 }
 
@@ -247,8 +282,7 @@ export async function refreshAllAccountUsage(): Promise<UsageRefreshResult[]> {
       const result = await refreshAccountUsage(account.id);
       results.push(result);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(bi(`[refresh] ${account.id} 失败: ${message}`, `[refresh] ${account.id} failed: ${message}`));
+      setUsageRefreshError(classifyUsageRefreshError(account.id, error));
     }
   }
 

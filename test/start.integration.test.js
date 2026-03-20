@@ -145,22 +145,42 @@ function closeServer(server) {
   });
 }
 
-test("默认启动使用 4399，并将端口与 api_key 同步到单一 provider 配置", async () => {
+/**
+ * 检查指定端口当前是否可监听，用于让集成测试兼容真实环境里已有的本地占用。
+ *
+ * @param port 待检查端口。
+ * @returns Promise，可用时返回 `true`，被占用时返回 `false`。
+ * @throws 无显式抛出。
+ */
+function isPortFree(port) {
+  const server = http.createServer();
+
+  return new Promise((resolve) => {
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+test("默认启动会把实际端口与 api_key 同步到单一 provider 配置", async () => {
   const homeDir = createIsolatedHome();
 
   try {
     const { stdout } = await runCli(homeDir, ["start"]);
-    assert.match(stdout, /http:\/\/127\.0\.0\.1:4399\/v1/);
+    const baseUrlMatch = stdout.match(/base_url=http:\/\/127\.0\.0\.1:(\d+)\/v1/);
+    assert.ok(baseUrlMatch);
+    const actualPort = Number(baseUrlMatch[1]);
 
-    await waitForHealth(4399);
+    await waitForHealth(actualPort);
 
     const cslotConfig = readCslotConfig(homeDir);
     const codexConfig = readCodexConfig(homeDir);
 
-    assert.equal(cslotConfig.server.port, 4399);
+    assert.equal(cslotConfig.server.port, actualPort);
     assert.match(cslotConfig.server.api_key, /^cslot-/);
     assert.match(codexConfig, /\[model_providers\.cslot\]/);
-    assert.match(codexConfig, /base_url = "http:\/\/127\.0\.0\.1:4399\/v1"/);
+    assert.match(codexConfig, new RegExp(`base_url = "http://127\\.0\\.0\\.1:${actualPort}/v1"`));
     assert.match(
       codexConfig,
       new RegExp(`experimental_bearer_token = "${cslotConfig.server.api_key}"`)
@@ -172,7 +192,12 @@ test("默认启动使用 4399，并将端口与 api_key 同步到单一 provider
   }
 });
 
-test("当 4399 被占用时自动顺延，并把实际端口同步写回配置", async () => {
+test("当 4399 被占用时自动顺延，并把实际端口同步写回配置", async (t) => {
+  if (!(await isPortFree(4399))) {
+    t.skip("当前环境中的 4399 已被外部占用，无法构造可控冲突场景。");
+    return;
+  }
+
   const homeDir = createIsolatedHome();
   const occupiedServer = await occupyPort(4399);
 
