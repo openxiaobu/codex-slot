@@ -138,9 +138,18 @@ export interface ManagedCodexConfigState {
   original_cslot_provider_next_table_header?: string | null;
 }
 
+export interface ManagedCodexAuthState {
+  target_home: string;
+  source_account_id?: string | null;
+  original_auth_file: string | null;
+  original_registry_file: string | null;
+  original_account_auth_files: Record<string, string>;
+}
+
 export interface CslotState {
   account_blocks: Record<string, AccountBlockState>;
   usage_cache: Record<string, UsageRefreshResult>;
   usage_refresh_errors: Record<string, UsageRefreshError>;
+  managed_codex_auth?: ManagedCodexAuthState | null;
   managed_codex_config?: ManagedCodexConfigState | null;
 }

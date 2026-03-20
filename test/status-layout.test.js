@@ -45,7 +45,7 @@ test("紧凑状态表只展示切换所需核心列，详情区补充 reset 与 
       cursorAccountId: "z"
     }
   });
-  const narrowDetails = renderStatusDetails(statuses[0], { maxWidth: 48 });
+  const narrowDetails = renderStatusDetails(statuses[0], { maxWidth: 48, header: false });
 
   assert.match(compactTable, /SLOT\s+PLAN\s+5H\s+WEEK\s+STATUS/);
   assert.doesNotMatch(compactTable, /EMAIL/);
@@ -55,7 +55,8 @@ test("紧凑状态表只展示切换所需核心列，详情区补充 reset 与 
   assert.match(details, /5h\s+100%\s+reset=/);
   assert.match(details, /week\s+62%\s+reset=/);
   assert.match(narrowTable, /ID\s+P\s+5H\s+WK\s+ST/);
-  assert.match(narrowDetails, /\[ current \]/);
+  assert.doesNotMatch(narrowDetails, /\[ current \]/);
+  assert.match(narrowDetails, /slot\s+z\*\s+plan=team/);
   assert.match(narrowDetails, /email\s+bk19981127001@gmail.com/);
   assert.match(narrowDetails, /5h\s+100%\s+reset=/);
   assert.match(narrowDetails, /week\s+62%\s+reset=/);

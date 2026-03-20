@@ -79,6 +79,19 @@ function renderSectionHeader(title: string, width: number, styled: boolean): str
 }
 
 /**
+ * 渲染轻量分隔线，用于账号主表与当前账号明细之间建立清晰层次。
+ *
+ * @param width 当前终端宽度。
+ * @param styled 是否启用 ANSI 样式。
+ * @returns 可直接打印的分隔线文本。
+ * @throws 无显式抛出。
+ */
+function renderDivider(width: number, styled: boolean): string {
+  const dividerWidth = Math.max(24, Math.min(width, 96));
+  return paint("-".repeat(dividerWidth), ANSI.dim, styled);
+}
+
+/**
  * 渲染摘要区可读性更高的计数文本，并对关键指标做轻量着色。
  *
  * @param summary 状态摘要计数。
@@ -252,7 +265,9 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
           }
         }),
         "",
-        renderStatusDetails(currentItem, { maxWidth: screenWidth }),
+        renderDivider(screenWidth, styled),
+        renderSectionHeader("current", screenWidth, styled),
+        renderStatusDetails(currentItem, { maxWidth: screenWidth, header: false }),
         "",
         renderSectionHeader("summary", screenWidth, styled),
         renderSummaryLine(summary, narrowScreen, styled),

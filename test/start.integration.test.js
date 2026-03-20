@@ -185,7 +185,11 @@ test("默认启动会把实际端口与 api_key 同步到单一 provider 配置"
       codexConfig,
       new RegExp(`experimental_bearer_token = "${cslotConfig.server.api_key}"`)
     );
-    assert.doesNotMatch(codexConfig, /http_headers/);
+    assert.match(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
+    assert.match(
+      codexConfig,
+      new RegExp(`Authorization = "Bearer ${cslotConfig.server.api_key}"`)
+    );
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -216,7 +220,11 @@ test("当 4399 被占用时自动顺延，并把实际端口同步写回配置",
       codexConfig,
       new RegExp(`experimental_bearer_token = "${cslotConfig.server.api_key}"`)
     );
-    assert.doesNotMatch(codexConfig, /http_headers/);
+    assert.match(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
+    assert.match(
+      codexConfig,
+      new RegExp(`Authorization = "Bearer ${cslotConfig.server.api_key}"`)
+    );
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
     await closeServer(occupiedServer);

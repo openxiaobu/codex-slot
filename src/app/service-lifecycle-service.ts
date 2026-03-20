@@ -3,9 +3,14 @@ import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { request } from "undici";
+import { listAccounts } from "./account-service";
+import { hasCompleteCodexAuthState } from "../account-store";
 import { applyManagedCodexConfig, deactivateManagedCodexConfig } from "../codex-config";
+import { applyManagedCodexAuth, deactivateManagedCodexAuth } from "../codex-auth";
 import { parsePort } from "../cli-helpers";
 import { getPidPath, getServiceLogPath, loadConfig, rotateServerApiKey, saveConfig } from "../config";
+import { pickBestAccount } from "../scheduler";
+import type { ManagedAccount } from "../types";
 
 const STARTUP_POLL_INTERVAL_MS = 100;
 const STARTUP_TIMEOUT_MS = 5000;
@@ -183,6 +188,50 @@ function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<type
   fs.rmSync(getPidPath(), { force: true });
   saveConfig(previousConfig);
   deactivateManagedCodexConfig();
+  deactivateManagedCodexAuth();
+}
+
+/**
+ * 选择一个可用于接管主 `~/.codex` 登录态的账号。
+ *
+ * 业务规则：
+ * 1. 优先复用当前调度器已经选中的最佳账号，保证 CLI 与代理请求走同一身份。
+ * 2. 若当前没有可调度账号，则回退到首个启用且本地工作空间仍存在的账号。
+ * 3. 若仍无可用账号，则返回 `null`，此时仅接管 provider 配置，不强行覆盖主登录态。
+ *
+ * @returns 选中的受管账号；若不存在可接管账号则返回 `null`。
+ * @throws 无显式抛出。
+ */
+function resolveManagedAuthAccount(): ManagedAccount | null {
+  const selected = pickBestAccount()?.account;
+  if (selected && hasCompleteCodexAuthState(selected.codex_home)) {
+    return selected;
+  }
+
+  return (
+    listAccounts().find(
+      (account) =>
+        account.enabled &&
+        fs.existsSync(account.codex_home) &&
+        hasCompleteCodexAuthState(account.codex_home)
+    ) ?? null
+  );
+}
+
+/**
+ * 将主 `~/.codex` 登录态切换到当前受管账号，供 `codex_apps` 等依赖主登录态的链路复用。
+ *
+ * @returns 实际接管的账号；若没有合适账号则返回 `null`。
+ * @throws 当目标账号目录缺少完整登录态时抛出异常。
+ */
+function applyManagedAuthIfPossible(): ManagedAccount | null {
+  const account = resolveManagedAuthAccount();
+  if (!account) {
+    return null;
+  }
+
+  applyManagedCodexAuth(account.codex_home, { sourceAccountId: account.id });
+  return account;
 }
 
 /**
@@ -264,6 +313,7 @@ export async function startManagedService(portOverride?: string): Promise<{
   // 每次真正启动服务前都轮换一次本地 api_key，并让受管 config.toml 使用同一新值。
   const persistedConfig = rotateServerApiKey(config);
   applyManagedCodexConfig(undefined, { config: persistedConfig });
+  applyManagedAuthIfPossible();
 
   const logPath = getServiceLogPath();
   const logFd = fs.openSync(logPath, "a");
@@ -312,12 +362,14 @@ export function stopManagedService(): { stoppedPid: number | null } {
 
   if (!pid) {
     deactivateManagedCodexConfig();
+    deactivateManagedCodexAuth();
     return { stoppedPid: null };
   }
 
   process.kill(pid, "SIGTERM");
   fs.rmSync(getPidPath(), { force: true });
   deactivateManagedCodexConfig();
+  deactivateManagedCodexAuth();
 
   return { stoppedPid: pid };
 }

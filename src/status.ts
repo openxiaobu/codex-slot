@@ -414,16 +414,20 @@ export function renderStatusTable(
  */
 export function renderStatusDetails(
   item: AccountRuntimeStatus | null,
-  options?: { maxWidth?: number }
+  options?: { maxWidth?: number; header?: boolean }
 ): string {
+  const includeHeader = options?.header ?? true;
+
   if (!item) {
-    return ["[ current ]", "slot   -"].join("\n");
+    return [includeHeader ? "[ current ]" : "slot   -", includeHeader ? "slot   -" : ""]
+      .filter((line) => line.length > 0)
+      .join("\n");
   }
 
   const maxWidth = options?.maxWidth ?? Number.POSITIVE_INFINITY;
   const narrow = maxWidth < 72;
   const lines = [
-    "[ current ]",
+    ...(includeHeader ? ["[ current ]"] : []),
     formatDetailLine("slot", `${item.name}  plan=${item.plan}`, maxWidth),
     formatDetailLine("email", item.email ?? "-", maxWidth),
     formatDetailLine("status", resolveStatusLabel(item), maxWidth),

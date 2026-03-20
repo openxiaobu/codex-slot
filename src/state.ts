@@ -4,6 +4,7 @@ import { getCslotHome } from "./config";
 import type {
   AccountBlockState,
   CslotState,
+  ManagedCodexAuthState,
   ManagedCodexConfigState,
   UsageRefreshError,
   UsageRefreshResult
@@ -26,6 +27,7 @@ export function loadState(): CslotState {
       account_blocks: {},
       usage_cache: {},
       usage_refresh_errors: {},
+      managed_codex_auth: null,
       managed_codex_config: null
     };
   }
@@ -37,6 +39,7 @@ export function loadState(): CslotState {
         account_blocks: {},
         usage_cache: {},
         usage_refresh_errors: {},
+        managed_codex_auth: null,
         managed_codex_config: null
       };
 
@@ -44,6 +47,7 @@ export function loadState(): CslotState {
     account_blocks: parsed.account_blocks ?? {},
     usage_cache: parsed.usage_cache ?? {},
     usage_refresh_errors: parsed.usage_refresh_errors ?? {},
+    managed_codex_auth: parsed.managed_codex_auth ?? null,
     managed_codex_config: parsed.managed_codex_config ?? null
   };
 }
@@ -186,6 +190,16 @@ export function getManagedCodexConfigState(): ManagedCodexConfigState | null {
 }
 
 /**
+ * 读取当前记录的 Codex 主 HOME 登录态接管快照。
+ *
+ * @returns 最近一次接管时保存的登录态快照；不存在时返回 `null`。
+ */
+export function getManagedCodexAuthState(): ManagedCodexAuthState | null {
+  const state = loadState();
+  return state.managed_codex_auth ?? null;
+}
+
+/**
  * 保存 Codex `config.toml` 接管快照，用于后续停止服务时精确恢复。
  *
  * @param managedState 接管前保存的原始片段快照。
@@ -198,6 +212,18 @@ export function setManagedCodexConfigState(managedState: ManagedCodexConfigState
 }
 
 /**
+ * 保存 Codex 主 HOME 登录态接管快照，用于 stop 时恢复原始登录态文件。
+ *
+ * @param managedState 接管前保存的原始登录态快照。
+ * @returns 无返回值。
+ */
+export function setManagedCodexAuthState(managedState: ManagedCodexAuthState): void {
+  const state = loadState();
+  state.managed_codex_auth = managedState;
+  saveState(state);
+}
+
+/**
  * 清理 Codex `config.toml` 接管快照。
  *
  * @returns 无返回值。
@@ -205,5 +231,16 @@ export function setManagedCodexConfigState(managedState: ManagedCodexConfigState
 export function clearManagedCodexConfigState(): void {
   const state = loadState();
   state.managed_codex_config = null;
+  saveState(state);
+}
+
+/**
+ * 清理 Codex 主 HOME 登录态接管快照。
+ *
+ * @returns 无返回值。
+ */
+export function clearManagedCodexAuthState(): void {
+  const state = loadState();
+  state.managed_codex_auth = null;
   saveState(state);
 }

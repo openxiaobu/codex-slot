@@ -77,8 +77,34 @@ function buildManagedProviderBlock(eol: string, config: CslotConfig): string {
     `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
     'wire_api = "responses"',
     `experimental_bearer_token = "${config.server.api_key}"`,
+    "[model_providers.cslot.http_headers]",
+    `Authorization = "Bearer ${config.server.api_key}"`,
     PROVIDER_BLOCK_END_MARKER
   ].join(eol);
+}
+
+/**
+ * 判断候选表头是否属于指定父表的子表。
+ *
+ * @param parentHeader 父表表头，例如 `[model_providers.cslot]`。
+ * @param candidateHeader 当前扫描到的候选表头。
+ * @returns `true` 表示候选表头属于父表子表；否则返回 `false`。
+ */
+function isChildTableHeader(parentHeader: string, candidateHeader: string): boolean {
+  const normalizedParent = parentHeader.trim();
+  const normalizedCandidate = candidateHeader.trim();
+
+  if (!normalizedParent.startsWith("[") || !normalizedParent.endsWith("]")) {
+    return false;
+  }
+
+  if (!normalizedCandidate.startsWith("[") || !normalizedCandidate.endsWith("]")) {
+    return false;
+  }
+
+  const parentName = normalizedParent.slice(1, -1);
+  const candidateName = normalizedCandidate.slice(1, -1);
+  return candidateName.startsWith(`${parentName}.`);
 }
 
 /**
@@ -246,7 +272,12 @@ function findTableSectionRange(
     const lineEnd = offset + line.length;
     const trimmed = line.trim();
 
-    if (i > startLineIndex && trimmed.startsWith("[") && !trimmed.startsWith("[[")) {
+    if (
+      i > startLineIndex &&
+      trimmed.startsWith("[") &&
+      !trimmed.startsWith("[[") &&
+      !isChildTableHeader(header, trimmed)
+    ) {
       break;
     }
 
