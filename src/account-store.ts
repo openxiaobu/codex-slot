@@ -82,14 +82,57 @@ function resolveEmailFromAuth(auth: CodexAuthFile | null): string | undefined {
 }
 
 /**
+ * 将来源 HOME 下的账号级 `.auth.json` 文件集合镜像到目标 HOME。
+ *
+ * 业务含义：
+ * 1. 仅同步 `accounts` 目录下的账号级认证文件。
+ * 2. 来源不存在某个 `.auth.json` 时，会删除目标中的同名残留，避免旧登录态混入。
+ * 3. 来源缺少 `accounts` 目录时，视为没有任何账号级认证文件。
+ *
+ * @param sourceAccountsDir 来源 `accounts` 目录绝对路径。
+ * @param targetAccountsDir 目标 `accounts` 目录绝对路径。
+ * @returns 无返回值。
+ * @throws 当文件复制或删除失败时透传文件系统错误。
+ */
+function syncAccountAuthFiles(sourceAccountsDir: string, targetAccountsDir: string): void {
+  const sourceAuthFiles = new Set<string>();
+
+  if (fs.existsSync(sourceAccountsDir)) {
+    for (const entry of fs.readdirSync(sourceAccountsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".auth.json")) {
+        continue;
+      }
+
+      sourceAuthFiles.add(entry.name);
+      fs.copyFileSync(
+        path.join(sourceAccountsDir, entry.name),
+        path.join(targetAccountsDir, entry.name)
+      );
+    }
+  }
+
+  for (const entry of fs.readdirSync(targetAccountsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".auth.json")) {
+      continue;
+    }
+
+    if (!sourceAuthFiles.has(entry.name)) {
+      fs.rmSync(path.join(targetAccountsDir, entry.name), { force: true });
+    }
+  }
+}
+
+/**
  * 将来源 HOME 下的官方 `.codex` 登录态复制到目标 HOME。
  *
  * 只复制认证和账号元数据所需文件，不复制历史日志、缓存等无关内容。
+ * 其中 `auth.json` 为必需文件，`accounts/registry.json` 与账号级 `.auth.json`
+ * 允许缺失；缺失时会同步删除目标中的对应残留文件，避免旧缓存污染当前登录态。
  *
  * @param sourceHome 来源 HOME 目录。
  * @param targetHome 目标 HOME 目录。
  * @returns 无返回值。
- * @throws 当来源目录缺少关键认证文件时抛出错误。
+ * @throws 当来源目录缺少 `auth.json` 或复制失败时抛出错误。
  */
 export function cloneCodexAuthState(sourceHome: string, targetHome: string): void {
   const sourceCodexDir = getCodexDataDir(sourceHome);
@@ -97,35 +140,25 @@ export function cloneCodexAuthState(sourceHome: string, targetHome: string): voi
   const sourceAuthPath = path.join(sourceCodexDir, "auth.json");
   const sourceAccountsDir = path.join(sourceCodexDir, "accounts");
   const sourceRegistryPath = path.join(sourceAccountsDir, "registry.json");
+  const targetAccountsDir = path.join(targetCodexDir, "accounts");
+  const targetRegistryPath = path.join(targetAccountsDir, "registry.json");
 
   if (!fs.existsSync(sourceAuthPath)) {
     throw new Error(bi(`来源目录缺少 auth.json: ${sourceAuthPath}`, `Source directory is missing auth.json: ${sourceAuthPath}`));
   }
 
-  if (!fs.existsSync(sourceRegistryPath)) {
-    throw new Error(bi(`来源目录缺少 registry.json: ${sourceRegistryPath}`, `Source directory is missing registry.json: ${sourceRegistryPath}`));
-  }
-
   fs.mkdirSync(targetCodexDir, { recursive: true });
-  fs.mkdirSync(path.join(targetCodexDir, "accounts"), { recursive: true });
+  fs.mkdirSync(targetAccountsDir, { recursive: true });
 
   fs.copyFileSync(sourceAuthPath, path.join(targetCodexDir, "auth.json"));
-  fs.copyFileSync(sourceRegistryPath, path.join(targetCodexDir, "accounts", "registry.json"));
 
-  for (const entry of fs.readdirSync(sourceAccountsDir, { withFileTypes: true })) {
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    if (!entry.name.endsWith(".auth.json")) {
-      continue;
-    }
-
-    fs.copyFileSync(
-      path.join(sourceAccountsDir, entry.name),
-      path.join(targetCodexDir, "accounts", entry.name)
-    );
+  if (fs.existsSync(sourceRegistryPath)) {
+    fs.copyFileSync(sourceRegistryPath, targetRegistryPath);
+  } else {
+    fs.rmSync(targetRegistryPath, { force: true });
   }
+
+  syncAccountAuthFiles(sourceAccountsDir, targetAccountsDir);
 }
 
 /**
