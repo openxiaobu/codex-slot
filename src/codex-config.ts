@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { expandHome, loadConfig } from "./config";
+import { expandHome, getUserHomeDir, loadConfig } from "./config";
 import {
   clearManagedCodexConfigState,
   getManagedCodexConfigState,
@@ -20,7 +20,7 @@ const PROVIDER_BLOCK_END_MARKER = "# <<< cslot provider:cslot <<<";
  * @returns 默认 `config.toml` 绝对路径。
  */
 export function getDefaultCodexConfigPath(): string {
-  return path.join(process.env.HOME ?? "", ".codex", "config.toml");
+  return path.join(getUserHomeDir(), ".codex", "config.toml");
 }
 
 /**

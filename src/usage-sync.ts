@@ -7,6 +7,8 @@ import {
 } from "./account-store";
 import { loadConfig } from "./config";
 import {
+  clearAccountBlock,
+  getAccountBlock,
   clearUsageRefreshError,
   getUsageCache,
   setUsageCache,
@@ -46,6 +48,13 @@ interface WhamUsageResponse {
   };
 }
 
+const SHORT_LIVED_ACCOUNT_BLOCK_REASONS = new Set([
+  "request_failed",
+  "upstream_5xx",
+  "temporary_5m_limit",
+  "token_refresh_failed"
+]);
+
 function normalizeResetAt(value?: number, resetAfterSeconds?: number): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -56,6 +65,24 @@ function normalizeResetAt(value?: number, resetAfterSeconds?: number): number | 
   }
 
   return null;
+}
+
+/**
+ * 当账号已经成功完成鉴权或额度刷新时，清理与瞬时异常相关的本地熔断。
+ *
+ * 只会移除短期失败类熔断，不会误清理 5 小时或周额度限制。
+ *
+ * @param accountId 账号标识。
+ * @returns 无返回值。
+ */
+function clearShortLivedAccountBlock(accountId: string): void {
+  const block = getAccountBlock(accountId);
+
+  if (!block || !SHORT_LIVED_ACCOUNT_BLOCK_REASONS.has(block.reason)) {
+    return;
+  }
+
+  clearAccountBlock(accountId);
 }
 
 /**
@@ -147,6 +174,7 @@ export async function refreshAccountTokens(accountId: string): Promise<CodexAuth
   };
 
   writeAuthFile(account.codex_home, nextAuth);
+  clearShortLivedAccountBlock(accountId);
   return nextAuth;
 }
 
@@ -215,6 +243,7 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
 
   setUsageCache(result);
   clearUsageRefreshError(accountId);
+  clearShortLivedAccountBlock(accountId);
   return result;
 }
 

@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import { cloneCodexAuthState, registerManagedAccount, removeManagedAccount } from "../account-store";
-import { expandHome, getManagedHome, loadConfig, saveConfig } from "../config";
+import { expandHome, getManagedHome, getUserHomeDir, loadConfig, saveConfig } from "../config";
 import { loginManagedAccount } from "../login";
-import { loadState, saveState } from "../state";
+import { updateState } from "../state";
 import { bi } from "../text";
 import type { ManagedAccount } from "../types";
 
@@ -18,7 +18,7 @@ export function importAccount(
   slotName: string,
   codexHome?: string
 ): { account: ManagedAccount; sourceHome: string } {
-  const sourceHome = codexHome ? expandHome(codexHome) : process.env.HOME ?? "";
+  const sourceHome = codexHome ? expandHome(codexHome) : getUserHomeDir();
   const managedHome = getManagedHome(slotName);
 
   cloneCodexAuthState(sourceHome, managedHome);
@@ -113,23 +113,23 @@ export function renameAccount(oldName: string, newName: string): ManagedAccount 
   config.accounts[index] = renamedAccount;
   saveConfig(config);
 
-  const state = loadState();
-  if (state.account_blocks[oldName]) {
-    state.account_blocks[newName] = state.account_blocks[oldName];
-    delete state.account_blocks[oldName];
-  }
-  if (state.usage_cache[oldName]) {
-    state.usage_cache[newName] = {
-      ...state.usage_cache[oldName],
-      accountId: newName
-    };
-    delete state.usage_cache[oldName];
-  }
-  if (state.scheduler_stats[oldName]) {
-    state.scheduler_stats[newName] = state.scheduler_stats[oldName];
-    delete state.scheduler_stats[oldName];
-  }
-  saveState(state);
+  updateState((state) => {
+    if (state.account_blocks[oldName]) {
+      state.account_blocks[newName] = state.account_blocks[oldName];
+      delete state.account_blocks[oldName];
+    }
+    if (state.usage_cache[oldName]) {
+      state.usage_cache[newName] = {
+        ...state.usage_cache[oldName],
+        accountId: newName
+      };
+      delete state.usage_cache[oldName];
+    }
+    if (state.scheduler_stats[oldName]) {
+      state.scheduler_stats[newName] = state.scheduler_stats[oldName];
+      delete state.scheduler_stats[oldName];
+    }
+  });
 
   return renamedAccount;
 }

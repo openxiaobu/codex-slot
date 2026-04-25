@@ -19,7 +19,8 @@ export async function loginManagedAccount(accountId: string): Promise<string> {
     const child = spawn("codex", ["login"], {
       env: {
         ...process.env,
-        HOME: managedHome
+        HOME: managedHome,
+        USERPROFILE: managedHome
       },
       stdio: "inherit"
     });

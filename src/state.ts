@@ -10,8 +10,53 @@ import type {
   UsageRefreshResult
 } from "./types";
 
+const STATE_SCHEMA_VERSION = 1;
+
 function getStatePath(): string {
   return path.join(getCslotHome(), "state.json");
+}
+
+/**
+ * 构造当前版本的默认本地状态对象。
+ *
+ * 业务含义：
+ * 1. 所有缺失或空 state 文件统一走这里补齐字段。
+ * 2. 新增状态字段时只需要在默认状态与归一化逻辑中集中维护。
+ *
+ * @returns 当前 schema 版本的默认状态。
+ * @throws 无显式抛出。
+ */
+function createDefaultState(): CslotState {
+  return {
+    state_version: STATE_SCHEMA_VERSION,
+    account_blocks: {},
+    usage_cache: {},
+    usage_refresh_errors: {},
+    scheduler_stats: {},
+    managed_codex_auth: null,
+    managed_codex_config: null
+  };
+}
+
+/**
+ * 将历史版本或字段缺失的 state 归一化为当前 schema。
+ *
+ * @param parsed 从 state 文件解析出的原始对象。
+ * @returns 补齐默认字段后的当前版本状态。
+ * @throws 无显式抛出。
+ */
+function normalizeState(parsed: Partial<CslotState> | null | undefined): CslotState {
+  const defaults = createDefaultState();
+
+  return {
+    state_version: STATE_SCHEMA_VERSION,
+    account_blocks: parsed?.account_blocks ?? defaults.account_blocks,
+    usage_cache: parsed?.usage_cache ?? defaults.usage_cache,
+    usage_refresh_errors: parsed?.usage_refresh_errors ?? defaults.usage_refresh_errors,
+    scheduler_stats: parsed?.scheduler_stats ?? defaults.scheduler_stats,
+    managed_codex_auth: parsed?.managed_codex_auth ?? defaults.managed_codex_auth,
+    managed_codex_config: parsed?.managed_codex_config ?? defaults.managed_codex_config
+  };
 }
 
 /**
@@ -23,36 +68,11 @@ export function loadState(): CslotState {
   const statePath = getStatePath();
 
   if (!fs.existsSync(statePath)) {
-    return {
-      account_blocks: {},
-      usage_cache: {},
-      usage_refresh_errors: {},
-      scheduler_stats: {},
-      managed_codex_auth: null,
-      managed_codex_config: null
-    };
+    return createDefaultState();
   }
 
   const raw = fs.readFileSync(statePath, "utf8");
-  const parsed = raw.trim()
-    ? (JSON.parse(raw) as CslotState)
-    : {
-        account_blocks: {},
-        usage_cache: {},
-        usage_refresh_errors: {},
-        scheduler_stats: {},
-        managed_codex_auth: null,
-        managed_codex_config: null
-      };
-
-  return {
-    account_blocks: parsed.account_blocks ?? {},
-    usage_cache: parsed.usage_cache ?? {},
-    usage_refresh_errors: parsed.usage_refresh_errors ?? {},
-    scheduler_stats: parsed.scheduler_stats ?? {},
-    managed_codex_auth: parsed.managed_codex_auth ?? null,
-    managed_codex_config: parsed.managed_codex_config ?? null
-  };
+  return normalizeState(raw.trim() ? (JSON.parse(raw) as Partial<CslotState>) : null);
 }
 
 /**
@@ -63,7 +83,29 @@ export function loadState(): CslotState {
  */
 export function saveState(state: CslotState): void {
   const statePath = getStatePath();
-  fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  const normalizedState = normalizeState(state);
+  const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
+
+  fs.writeFileSync(tempPath, `${JSON.stringify(normalizedState, null, 2)}\n`, "utf8");
+  fs.renameSync(tempPath, statePath);
+}
+
+/**
+ * 在单一边界内读取、修改并保存本地状态。
+ *
+ * 业务含义：
+ * 1. 所有状态写入都统一经过当前函数，避免各模块散落 load/mutate/save 流程。
+ * 2. 保存阶段复用原子替换写入，降低半写入状态文件风险。
+ *
+ * @param mutator 状态修改函数；接收当前状态对象并可原地修改。
+ * @returns 修改后已保存的状态对象。
+ * @throws 当读取、修改或写入失败时透传底层异常。
+ */
+export function updateState(mutator: (state: CslotState) => void): CslotState {
+  const state = loadState();
+  mutator(state);
+  saveState(state);
+  return state;
 }
 
 /**
@@ -75,13 +117,25 @@ export function saveState(state: CslotState): void {
  * @returns 无返回值。
  */
 export function setAccountBlock(accountId: string, until: number | null, reason: string): void {
-  const state = loadState();
-  state.account_blocks[accountId] = {
-    until,
-    reason,
-    updated_at: new Date().toISOString()
-  };
-  saveState(state);
+  updateState((state) => {
+    state.account_blocks[accountId] = {
+      until,
+      reason,
+      updated_at: new Date().toISOString()
+    };
+  });
+}
+
+/**
+ * 清理指定账号当前记录的本地禁用状态。
+ *
+ * @param accountId 账号标识。
+ * @returns 无返回值。
+ */
+export function clearAccountBlock(accountId: string): void {
+  updateState((state) => {
+    delete state.account_blocks[accountId];
+  });
 }
 
 /**
@@ -102,7 +156,16 @@ export function pruneExpiredBlocks(): CslotState {
   }
 
   if (changed) {
-    saveState(state);
+    updateState((latest) => {
+      for (const accountId of Object.keys(state.account_blocks)) {
+        latest.account_blocks[accountId] = state.account_blocks[accountId];
+      }
+      for (const accountId of Object.keys(latest.account_blocks)) {
+        if (!(accountId in state.account_blocks)) {
+          delete latest.account_blocks[accountId];
+        }
+      }
+    });
   }
 
   return state;
@@ -126,9 +189,9 @@ export function getAccountBlock(accountId: string): AccountBlockState | null {
  * @returns 无返回值。
  */
 export function setUsageCache(usage: import("./types").UsageRefreshResult): void {
-  const state = loadState();
-  state.usage_cache[usage.accountId] = usage;
-  saveState(state);
+  updateState((state) => {
+    state.usage_cache[usage.accountId] = usage;
+  });
 }
 
 /**
@@ -149,9 +212,9 @@ export function getUsageCache(accountId: string): UsageRefreshResult | null {
  * @returns 无返回值。
  */
 export function setUsageRefreshError(usageError: UsageRefreshError): void {
-  const state = loadState();
-  state.usage_refresh_errors[usageError.accountId] = usageError;
-  saveState(state);
+  updateState((state) => {
+    state.usage_refresh_errors[usageError.accountId] = usageError;
+  });
 }
 
 /**
@@ -161,14 +224,9 @@ export function setUsageRefreshError(usageError: UsageRefreshError): void {
  * @returns 无返回值。
  */
 export function clearUsageRefreshError(accountId: string): void {
-  const state = loadState();
-
-  if (!(accountId in state.usage_refresh_errors)) {
-    return;
-  }
-
-  delete state.usage_refresh_errors[accountId];
-  saveState(state);
+  updateState((state) => {
+    delete state.usage_refresh_errors[accountId];
+  });
 }
 
 /**
@@ -180,40 +238,6 @@ export function clearUsageRefreshError(accountId: string): void {
 export function getUsageRefreshError(accountId: string): UsageRefreshError | null {
   const state = loadState();
   return state.usage_refresh_errors[accountId] ?? null;
-}
-
-/**
- * 读取指定账号的调度使用统计，用于在多账号可用时做均匀分摊。
- *
- * @param accountId 账号标识。
- * @returns 调度统计；不存在时返回默认零值。
- */
-export function getSchedulerStats(accountId: string): import("./types").AccountSchedulerStats {
-  const state = loadState();
-  return state.scheduler_stats[accountId] ?? {
-    success_count: 0,
-    last_success_at: null
-  };
-}
-
-/**
- * 记录指定账号完成一次成功代理请求，供后续调度降低连续命中同一账号的概率。
- *
- * @param accountId 账号标识。
- * @returns 无返回值。
- */
-export function recordAccountScheduleSuccess(accountId: string): void {
-  const state = loadState();
-  const current = state.scheduler_stats[accountId] ?? {
-    success_count: 0,
-    last_success_at: null
-  };
-
-  state.scheduler_stats[accountId] = {
-    success_count: current.success_count + 1,
-    last_success_at: new Date().toISOString()
-  };
-  saveState(state);
 }
 
 /**
@@ -243,9 +267,9 @@ export function getManagedCodexAuthState(): ManagedCodexAuthState | null {
  * @returns 无返回值。
  */
 export function setManagedCodexConfigState(managedState: ManagedCodexConfigState): void {
-  const state = loadState();
-  state.managed_codex_config = managedState;
-  saveState(state);
+  updateState((state) => {
+    state.managed_codex_config = managedState;
+  });
 }
 
 /**
@@ -255,9 +279,9 @@ export function setManagedCodexConfigState(managedState: ManagedCodexConfigState
  * @returns 无返回值。
  */
 export function setManagedCodexAuthState(managedState: ManagedCodexAuthState): void {
-  const state = loadState();
-  state.managed_codex_auth = managedState;
-  saveState(state);
+  updateState((state) => {
+    state.managed_codex_auth = managedState;
+  });
 }
 
 /**
@@ -266,9 +290,9 @@ export function setManagedCodexAuthState(managedState: ManagedCodexAuthState): v
  * @returns 无返回值。
  */
 export function clearManagedCodexConfigState(): void {
-  const state = loadState();
-  state.managed_codex_config = null;
-  saveState(state);
+  updateState((state) => {
+    state.managed_codex_config = null;
+  });
 }
 
 /**
@@ -277,7 +301,7 @@ export function clearManagedCodexConfigState(): void {
  * @returns 无返回值。
  */
 export function clearManagedCodexAuthState(): void {
-  const state = loadState();
-  state.managed_codex_auth = null;
-  saveState(state);
+  updateState((state) => {
+    state.managed_codex_auth = null;
+  });
 }

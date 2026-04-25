@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { cloneCodexAuthState, getCodexDataDir } from "./account-store";
+import { getUserHomeDir } from "./config";
 import {
   clearManagedCodexAuthState,
   getManagedCodexAuthState,
@@ -14,7 +15,7 @@ import type { ManagedCodexAuthState } from "./types";
  * @returns 当前进程 HOME；未设置时返回空字符串。
  */
 export function getDefaultCodexHome(): string {
-  return process.env.HOME ?? "";
+  return getUserHomeDir();
 }
 
 /**

@@ -98,6 +98,23 @@ export interface SchedulerPick {
   account: ManagedAccount;
   status: AccountRuntimeStatus;
   reason: string;
+  score?: number;
+  breakdown?: ScheduleScoreBreakdown;
+}
+
+export interface ScheduleScoreBreakdown {
+  weeklyWaste: number;
+  fiveHourWaste: number;
+  weeklyHealth: number;
+  spread: number;
+  fiveHourLeft: number;
+}
+
+export interface ScheduleDecision {
+  status: AccountRuntimeStatus;
+  score: number;
+  breakdown: ScheduleScoreBreakdown;
+  reason: string;
 }
 
 export interface RunOptions {
@@ -152,6 +169,7 @@ export interface ManagedCodexAuthState {
 }
 
 export interface CslotState {
+  state_version: number;
   account_blocks: Record<string, AccountBlockState>;
   usage_cache: Record<string, UsageRefreshResult>;
   usage_refresh_errors: Record<string, UsageRefreshError>;

@@ -45,6 +45,15 @@ const configSchema = z.object({
 });
 
 /**
+ * 解析当前进程应使用的用户 HOME 目录，兼容 Windows 缺少 `HOME` 的场景。
+ *
+ * @returns 当前用户 HOME 目录；优先复用显式环境变量，兜底使用 `os.homedir()`。
+ */
+export function getUserHomeDir(): string {
+  return process.env.HOME || process.env.USERPROFILE || os.homedir();
+}
+
+/**
  * 生成新的本地服务 API Key。
  *
  * 该 key 仅用于本地代理服务与受管 `~/.codex/config.toml` 之间的鉴权，
@@ -63,7 +72,7 @@ export function generateServerApiKey(): string {
  * @throws 当目录无法创建时抛出文件系统错误。
  */
 export function getCslotHome(): string {
-  const home = path.join(os.homedir(), ".cslot");
+  const home = path.join(getUserHomeDir(), ".cslot");
 
   // 先创建 cslot 根目录，后续命令统一基于该目录读写状态。
   fs.mkdirSync(home, { recursive: true });
@@ -107,12 +116,14 @@ export function getServiceLogPath(): string {
  * @returns 展开后的绝对或原始路径。
  */
 export function expandHome(input: string): string {
+  const homeDir = getUserHomeDir();
+
   if (input === "~") {
-    return os.homedir();
+    return homeDir;
   }
 
   if (input.startsWith("~/")) {
-    return path.join(os.homedir(), input.slice(2));
+    return path.join(homeDir, input.slice(2));
   }
 
   return input;

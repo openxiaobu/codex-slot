@@ -146,6 +146,89 @@ function closeServer(server) {
 }
 
 /**
+ * 启动一个临时上游服务，供代理集成测试验证 2xx/4xx 转发稳定性。
+ *
+ * @param handler 请求处理函数。
+ * @returns Promise，成功时返回已监听的 server 与端口。
+ * @throws 当监听失败时抛出底层错误。
+ */
+function startUpstreamServer(handler) {
+  const server = http.createServer(handler);
+
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+
+      resolve({
+        server,
+        port: address && typeof address === "object" ? address.port : 0
+      });
+    });
+  });
+}
+
+/**
+ * 为代理测试准备最小可用的受管账号与本地配置。
+ *
+ * @param homeDir 测试专用 HOME 目录。
+ * @param upstreamPort 假上游服务端口。
+ * @returns 无返回值。
+ * @throws 当目录或配置写入失败时抛出文件系统错误。
+ */
+function prepareManagedProxyFixture(homeDir, upstreamPort) {
+  const cslotDir = path.join(homeDir, ".cslot");
+  const managedHome = path.join(cslotDir, "homes", "slot-a");
+  const managedCodexDir = path.join(managedHome, ".codex");
+
+  fs.mkdirSync(managedCodexDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(managedCodexDir, "auth.json"),
+    JSON.stringify(
+      {
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: "test-access-token",
+          refresh_token: "test-refresh-token",
+          account_id: "test-account-id"
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  fs.mkdirSync(cslotDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(cslotDir, "config.yaml"),
+    YAML.stringify({
+      version: 1,
+      server: {
+        host: "127.0.0.1",
+        port: 4399,
+        api_key: "cslot-test-key",
+        body_limit_mb: 512
+      },
+      upstream: {
+        codex_base_url: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
+        auth_base_url: "https://auth.openai.com",
+        oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
+      },
+      accounts: [
+        {
+          id: "slot-a",
+          name: "slot-a",
+          codex_home: managedHome,
+          enabled: true
+        }
+      ]
+    }),
+    "utf8"
+  );
+}
+
+/**
  * 检查指定端口当前是否可监听，用于让集成测试兼容真实环境里已有的本地占用。
  *
  * @param port 待检查端口。
@@ -228,6 +311,96 @@ test("当 4399 被占用时自动顺延，并把实际端口同步写回配置",
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
     await closeServer(occupiedServer);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("代理转发 400 后服务仍保持存活", async () => {
+  const homeDir = createIsolatedHome();
+  const { server: upstreamServer, port: upstreamPort } = await startUpstreamServer((req, res) => {
+    if (req.url !== "/backend-api/codex/responses") {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+
+    res.statusCode = 400;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: { message: "bad request" } }));
+  });
+
+  try {
+    prepareManagedProxyFixture(homeDir, upstreamPort);
+
+    const { stdout } = await runCli(homeDir, ["start"]);
+    const portMatch = stdout.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+    assert.ok(portMatch);
+    const proxyPort = Number(portMatch[1]);
+
+    await waitForHealth(proxyPort);
+
+    const cslotConfig = readCslotConfig(homeDir);
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${cslotConfig.server.api_key}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ model: "test-model", input: "hello" })
+    });
+
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /bad request/);
+
+    await waitForHealth(proxyPort);
+  } finally {
+    await runCli(homeDir, ["stop"]).catch(() => {});
+    await closeServer(upstreamServer);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("代理转发 200 后服务仍保持存活", async () => {
+  const homeDir = createIsolatedHome();
+  const { server: upstreamServer, port: upstreamPort } = await startUpstreamServer((req, res) => {
+    if (req.url !== "/backend-api/codex/responses") {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  try {
+    prepareManagedProxyFixture(homeDir, upstreamPort);
+
+    const { stdout } = await runCli(homeDir, ["start"]);
+    const portMatch = stdout.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+    assert.ok(portMatch);
+    const proxyPort = Number(portMatch[1]);
+
+    await waitForHealth(proxyPort);
+
+    const cslotConfig = readCslotConfig(homeDir);
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${cslotConfig.server.api_key}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ model: "test-model", input: "hello" })
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+
+    await waitForHealth(proxyPort);
+  } finally {
+    await runCli(homeDir, ["stop"]).catch(() => {});
+    await closeServer(upstreamServer);
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
