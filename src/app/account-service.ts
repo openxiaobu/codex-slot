@@ -125,6 +125,10 @@ export function renameAccount(oldName: string, newName: string): ManagedAccount 
     };
     delete state.usage_cache[oldName];
   }
+  if (state.scheduler_stats[oldName]) {
+    state.scheduler_stats[newName] = state.scheduler_stats[oldName];
+    delete state.scheduler_stats[oldName];
+  }
   saveState(state);
 
   return renamedAccount;

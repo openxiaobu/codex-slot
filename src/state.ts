@@ -27,6 +27,7 @@ export function loadState(): CslotState {
       account_blocks: {},
       usage_cache: {},
       usage_refresh_errors: {},
+      scheduler_stats: {},
       managed_codex_auth: null,
       managed_codex_config: null
     };
@@ -39,6 +40,7 @@ export function loadState(): CslotState {
         account_blocks: {},
         usage_cache: {},
         usage_refresh_errors: {},
+        scheduler_stats: {},
         managed_codex_auth: null,
         managed_codex_config: null
       };
@@ -47,6 +49,7 @@ export function loadState(): CslotState {
     account_blocks: parsed.account_blocks ?? {},
     usage_cache: parsed.usage_cache ?? {},
     usage_refresh_errors: parsed.usage_refresh_errors ?? {},
+    scheduler_stats: parsed.scheduler_stats ?? {},
     managed_codex_auth: parsed.managed_codex_auth ?? null,
     managed_codex_config: parsed.managed_codex_config ?? null
   };
@@ -177,6 +180,40 @@ export function clearUsageRefreshError(accountId: string): void {
 export function getUsageRefreshError(accountId: string): UsageRefreshError | null {
   const state = loadState();
   return state.usage_refresh_errors[accountId] ?? null;
+}
+
+/**
+ * 读取指定账号的调度使用统计，用于在多账号可用时做均匀分摊。
+ *
+ * @param accountId 账号标识。
+ * @returns 调度统计；不存在时返回默认零值。
+ */
+export function getSchedulerStats(accountId: string): import("./types").AccountSchedulerStats {
+  const state = loadState();
+  return state.scheduler_stats[accountId] ?? {
+    success_count: 0,
+    last_success_at: null
+  };
+}
+
+/**
+ * 记录指定账号完成一次成功代理请求，供后续调度降低连续命中同一账号的概率。
+ *
+ * @param accountId 账号标识。
+ * @returns 无返回值。
+ */
+export function recordAccountScheduleSuccess(accountId: string): void {
+  const state = loadState();
+  const current = state.scheduler_stats[accountId] ?? {
+    success_count: 0,
+    last_success_at: null
+  };
+
+  state.scheduler_stats[accountId] = {
+    success_count: current.success_count + 1,
+    last_success_at: new Date().toISOString()
+  };
+  saveState(state);
 }
 
 /**

@@ -5,7 +5,7 @@ import { readAuthFile } from "./account-store";
 import { loadConfig } from "./config";
 import { collectAccountStatuses } from "./status";
 import { listCandidateAccounts, pickBestAccount } from "./scheduler";
-import { setAccountBlock } from "./state";
+import { recordAccountScheduleSuccess, setAccountBlock } from "./state";
 import { bi } from "./text";
 import { refreshAccountTokens, refreshAccountUsage } from "./usage-sync";
 import type { SchedulerPick } from "./types";
@@ -427,6 +427,7 @@ export async function startServer(port: number): Promise<void> {
         headers["cache-control"] = cacheControl;
       }
 
+      recordAccountScheduleSuccess(picked.account.id);
       headers.connection = "keep-alive";
       reply.raw.writeHead(upstream.statusCode, headers);
 

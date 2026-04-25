@@ -240,3 +240,189 @@ test("status 遇到不可用工作空间时展示账号状态而不是输出控�
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
+
+test("调度算法优先消耗快重置的周额度，并在周额度健康时消耗 5 小时余额", () => {
+  const homeDir = createIsolatedHome();
+  const cslotDir = path.join(homeDir, ".cslot");
+  const now = Math.floor(Date.now() / 1000);
+  const scenarios = [
+    {
+      expected: "weekly-reset-soon",
+      accounts: [
+        {
+          id: "five-hour-reset-soon",
+          fiveHourUsedPercent: 5,
+          fiveHourResetAt: now + 60 * 60,
+          weeklyUsedPercent: 10,
+          weeklyResetAt: now + 6 * 24 * 60 * 60
+        },
+        {
+          id: "weekly-reset-soon",
+          fiveHourUsedPercent: 20,
+          fiveHourResetAt: now + 2 * 60 * 60,
+          weeklyUsedPercent: 50,
+          weeklyResetAt: now + 24 * 60 * 60
+        }
+      ],
+      scheduler_stats: {}
+    },
+    {
+      expected: "healthy-five-hour",
+      accounts: [
+        {
+          id: "low-week-fast-five-hour",
+          fiveHourUsedPercent: 10,
+          fiveHourResetAt: now + 30 * 60,
+          weeklyUsedPercent: 90,
+          weeklyResetAt: now + 4 * 24 * 60 * 60
+        },
+        {
+          id: "healthy-five-hour",
+          fiveHourUsedPercent: 20,
+          fiveHourResetAt: now + 2 * 60 * 60,
+          weeklyUsedPercent: 35,
+          weeklyResetAt: now + 4 * 24 * 60 * 60
+        }
+      ],
+      scheduler_stats: {}
+    },
+    {
+      expected: "healthy-week",
+      accounts: [
+        {
+          id: "critical-week",
+          fiveHourUsedPercent: 20,
+          fiveHourResetAt: now + 60 * 60,
+          weeklyUsedPercent: 96,
+          weeklyResetAt: now + 3 * 24 * 60 * 60
+        },
+        {
+          id: "healthy-week",
+          fiveHourUsedPercent: 30,
+          fiveHourResetAt: now + 3 * 60 * 60,
+          weeklyUsedPercent: 20,
+          weeklyResetAt: now + 3 * 24 * 60 * 60
+        }
+      ],
+      scheduler_stats: {}
+    },
+    {
+      expected: "less-used",
+      accounts: [
+        {
+          id: "recent-heavy",
+          fiveHourUsedPercent: 30,
+          fiveHourResetAt: now + 2 * 60 * 60,
+          weeklyUsedPercent: 30,
+          weeklyResetAt: now + 3 * 24 * 60 * 60
+        },
+        {
+          id: "less-used",
+          fiveHourUsedPercent: 30,
+          fiveHourResetAt: now + 2 * 60 * 60,
+          weeklyUsedPercent: 30,
+          weeklyResetAt: now + 3 * 24 * 60 * 60
+        }
+      ],
+      scheduler_stats: {
+        "recent-heavy": {
+          success_count: 10,
+          last_success_at: new Date().toISOString()
+        },
+        "less-used": {
+          success_count: 0,
+          last_success_at: null
+        }
+      }
+    }
+  ];
+
+  try {
+    for (const scenario of scenarios) {
+      const accounts = scenario.accounts.map((account) => {
+        const managedHome = path.join(cslotDir, "homes", account.id);
+        const managedCodexDir = path.join(managedHome, ".codex");
+
+        fs.mkdirSync(managedCodexDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(managedCodexDir, "auth.json"),
+          JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: {
+              access_token: `${account.id}-access-token`,
+              refresh_token: `${account.id}-refresh-token`,
+              account_id: `${account.id}-account-id`
+            }
+          }),
+          "utf8"
+        );
+
+        return {
+          id: account.id,
+          name: account.id,
+          codex_home: managedHome,
+          enabled: true
+        };
+      });
+
+      fs.mkdirSync(cslotDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(cslotDir, "config.yaml"),
+        YAML.stringify({
+          version: 1,
+          server: {
+            host: "127.0.0.1",
+            port: 4399,
+            api_key: "cslot-test-token",
+            body_limit_mb: 512
+          },
+          upstream: {
+            codex_base_url: "https://chatgpt.com/backend-api/codex",
+            auth_base_url: "https://auth.openai.com",
+            oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
+          },
+          accounts
+        }),
+        "utf8"
+      );
+      fs.writeFileSync(
+        path.join(cslotDir, "state.json"),
+        JSON.stringify(
+          {
+            account_blocks: {},
+            usage_cache: Object.fromEntries(
+              scenario.accounts.map((account) => [
+                account.id,
+                {
+                  accountId: account.id,
+                  plan: "plus",
+                  fiveHourUsedPercent: account.fiveHourUsedPercent,
+                  fiveHourResetAt: account.fiveHourResetAt,
+                  weeklyUsedPercent: account.weeklyUsedPercent,
+                  weeklyResetAt: account.weeklyResetAt,
+                  refreshedAt: new Date().toISOString()
+                }
+              ])
+            ),
+            usage_refresh_errors: {},
+            scheduler_stats: scenario.scheduler_stats,
+            managed_codex_auth: null,
+            managed_codex_config: null
+          },
+          null,
+          2
+        ),
+        "utf8"
+      );
+
+      withHome(homeDir, () => {
+        const { pickBestAccount } = require("../dist/scheduler.js");
+        assert.equal(pickBestAccount()?.account.id, scenario.expected);
+      });
+
+      fs.rmSync(path.join(cslotDir, "homes"), { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});

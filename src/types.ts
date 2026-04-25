@@ -129,6 +129,11 @@ export interface AccountBlockState {
   updated_at: string;
 }
 
+export interface AccountSchedulerStats {
+  success_count: number;
+  last_success_at: string | null;
+}
+
 export interface ManagedCodexConfigState {
   target_file: string;
   original_model_provider_block: string | null;
@@ -150,6 +155,7 @@ export interface CslotState {
   account_blocks: Record<string, AccountBlockState>;
   usage_cache: Record<string, UsageRefreshResult>;
   usage_refresh_errors: Record<string, UsageRefreshError>;
+  scheduler_stats: Record<string, AccountSchedulerStats>;
   managed_codex_auth?: ManagedCodexAuthState | null;
   managed_codex_config?: ManagedCodexConfigState | null;
 }
