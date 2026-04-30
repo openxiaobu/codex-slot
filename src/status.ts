@@ -14,6 +14,7 @@ interface StatusTableRenderOptions {
   };
   compact?: boolean;
   maxWidth?: number;
+  styled?: boolean;
 }
 
 export interface AccountStatusSummary {
@@ -21,6 +22,15 @@ export interface AccountStatusSummary {
   fiveHourLimited: number;
   weeklyLimited: number;
 }
+
+const TABLE_ANSI = {
+  reset: "\x1b[0m",
+  dim: "\x1b[2m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  red: "\x1b[31m",
+  cyan: "\x1b[36m"
+} as const;
 
 function computeLeftPercent(usedPercent: number | null | undefined): number | null {
   if (usedPercent === null || usedPercent === undefined || Number.isNaN(usedPercent)) {
@@ -51,26 +61,254 @@ function formatReset(unixSeconds: number | null): string {
 }
 
 /**
- * 按给定最大宽度截断单元格文本，优先保证表格整体不换行。
+ * 移除 ANSI 控制序列，获得真实可见文本。
+ *
+ * 业务含义：
+ * 1. 交互界面会对状态列做轻量着色。
+ * 2. 表格宽度计算必须忽略颜色控制符，否则列宽会被错误拉大。
+ *
+ * @param value 可能包含 ANSI 样式的文本。
+ * @returns 去除 ANSI 控制序列后的可见文本。
+ * @throws 无显式抛出。
+ */
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/**
+ * 按需给文本添加 ANSI 样式。
  *
  * @param value 原始文本。
- * @param maxWidth 最大宽度。
+ * @param color ANSI 颜色或样式控制符。
+ * @param styled 是否启用样式。
+ * @returns 启用样式时返回带 ANSI 控制符的文本，否则返回原文。
+ * @throws 无显式抛出。
+ */
+function styleCell(value: string, color: string, styled: boolean): string {
+  if (!styled) {
+    return value;
+  }
+
+  return `${color}${value}${TABLE_ANSI.reset}`;
+}
+
+/**
+ * 判断字符是否应按双列宽展示。
+ *
+ * 业务含义：
+ * 1. 终端中中文、全角符号与多数 CJK 字符通常占两个显示列。
+ * 2. 表格列宽若只按字符串长度计算，会导致包含中文括号的账号名错位或过早截断。
+ *
+ * @param codePoint Unicode code point；必须来自单个字符迭代结果。
+ * @returns `true` 表示该字符应按双列宽计算；其他字符返回 `false`。
+ * @throws 无显式抛出。
+ */
+function isWideCodePoint(codePoint: number): boolean {
+  return (
+    codePoint >= 0x1100 &&
+    (
+      codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    )
+  );
+}
+
+/**
+ * 计算文本在常见等宽终端中的显示列宽。
+ *
+ * 业务含义：
+ * 1. 状态表需要根据终端列数分配可用空间。
+ * 2. 账号名可能包含中文日期括号，必须按显示宽度而不是 UTF-16 长度计算。
+ *
+ * @param value 待展示文本；允许为空字符串。
+ * @returns 文本占用的终端显示列数。
+ * @throws 无显式抛出。
+ */
+function getDisplayWidth(value: string): number {
+  const visibleValue = stripAnsi(value);
+  let width = 0;
+
+  for (const char of visibleValue) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    width += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+
+  return width;
+}
+
+/**
+ * 按终端显示列宽截断文本。
+ *
+ * 业务含义：
+ * 1. 优先保证表格整体不换行。
+ * 2. 截断时保留省略号，让用户能看出内容未完全展示。
+ *
+ * @param value 原始文本。
+ * @param maxWidth 最大显示列宽；小于等于 0 时返回空字符串。
  * @returns 截断后的文本；宽度过小时退化为最短可读形式。
+ * @throws 无显式抛出。
  */
 function truncateCell(value: string, maxWidth: number): string {
   if (maxWidth <= 0) {
     return "";
   }
 
-  if (value.length <= maxWidth) {
+  if (getDisplayWidth(value) <= maxWidth) {
     return value;
   }
 
   if (maxWidth <= 2) {
-    return value.slice(0, maxWidth);
+    let output = "";
+    let width = 0;
+
+    for (const char of value) {
+      const charWidth = getDisplayWidth(char);
+      if (width + charWidth > maxWidth) {
+        break;
+      }
+
+      output += char;
+      width += charWidth;
+    }
+
+    return output;
   }
 
-  return `${value.slice(0, maxWidth - 1)}…`;
+  const ellipsis = "…";
+  const targetWidth = maxWidth - getDisplayWidth(ellipsis);
+  let output = "";
+  let width = 0;
+
+  for (const char of value) {
+    const charWidth = getDisplayWidth(char);
+    if (width + charWidth > targetWidth) {
+      break;
+    }
+
+    output += char;
+    width += charWidth;
+  }
+
+  return `${output}${ellipsis}`;
+}
+
+/**
+ * 按终端显示列宽补齐单元格。
+ *
+ * @param value 已完成截断的单元格文本。
+ * @param width 目标显示列宽。
+ * @returns 右侧补空格后的单元格文本。
+ * @throws 无显式抛出。
+ */
+function padCell(value: string, width: number): string {
+  return `${value}${" ".repeat(Math.max(0, width - getDisplayWidth(value)))}`;
+}
+
+/**
+ * 根据账号状态给状态标签选择终端样式。
+ *
+ * 业务含义：
+ * 1. `available` 是调度可用状态，使用绿色强调。
+ * 2. 额度限制和短时熔断需要提醒但不一定是错误，使用黄色。
+ * 3. 工作空间损坏、账号缺失等不可用异常使用红色。
+ * 4. 禁用账号使用弱化样式，减少对可用账号的视觉干扰。
+ *
+ * @param status 已归一化的状态标签。
+ * @param item 单个账号状态。
+ * @param styled 是否启用 ANSI 样式。
+ * @returns 应用于表格状态列的文本。
+ * @throws 无显式抛出。
+ */
+function styleStatusCell(status: string, item: AccountRuntimeStatus, styled: boolean): string {
+  if (!styled) {
+    return status;
+  }
+
+  if (item.isAvailable) {
+    return styleCell(status, TABLE_ANSI.green, styled);
+  }
+
+  if (!item.enabled) {
+    return styleCell(status, TABLE_ANSI.dim, styled);
+  }
+
+  if (item.refreshErrorCode || !item.exists) {
+    return styleCell(status, TABLE_ANSI.red, styled);
+  }
+
+  if (item.isFiveHourLimited || item.isWeeklyLimited || item.localBlockUntil) {
+    return styleCell(status, TABLE_ANSI.yellow, styled);
+  }
+
+  return status;
+}
+
+/**
+ * 对当前自动选中账号的名称做轻量强调。
+ *
+ * @param name 账号展示名称。
+ * @param styled 是否启用 ANSI 样式。
+ * @returns 表格名称列展示文本。
+ * @throws 无显式抛出。
+ */
+function styleNameCell(name: string, styled: boolean): string {
+  if (!styled || !name.endsWith("*")) {
+    return name;
+  }
+
+  return styleCell(name, TABLE_ANSI.cyan, styled);
+}
+
+/**
+ * 计算紧凑状态表中账号名称列可使用的显示宽度。
+ *
+ * 业务含义：
+ * 1. 窄终端下保留最小可读名称。
+ * 2. 终端变宽时优先把新增空间分配给账号名称，避免固定 12 列导致名字仍被截断。
+ *
+ * @param statuses 待展示账号状态。
+ * @param hasSelector 是否展示选择/启用状态列。
+ * @param maxWidth 当前终端最大显示列宽；无穷大表示不限制。
+ * @param headerWidth 当前账号列标题宽度。
+ * @param planWidth plan 列宽。
+ * @param statusWidth 状态列宽。
+ * @returns 账号名称列的目标显示宽度。
+ * @throws 无显式抛出。
+ */
+function resolveCompactSlotWidth(
+  statuses: AccountRuntimeStatus[],
+  hasSelector: boolean,
+  maxWidth: number,
+  headerWidth: number,
+  planWidth: number,
+  statusWidth: number
+): number {
+  const longestNameWidth = Math.max(headerWidth, ...statuses.map((item) => getDisplayWidth(item.name)));
+
+  if (!Number.isFinite(maxWidth)) {
+    return longestNameWidth;
+  }
+
+  const fixedColumnWidths = [
+    ...(hasSelector ? [4] : []),
+    planWidth,
+    3,
+    4,
+    statusWidth
+  ];
+  const separatorWidth = 2 * fixedColumnWidths.length;
+  const availableWidth = Math.floor(maxWidth) - fixedColumnWidths.reduce((sum, width) => sum + width, 0) - separatorWidth;
+  const minWidth = maxWidth < 56 ? 8 : 12;
+
+  return Math.max(Math.min(longestNameWidth, availableWidth), Math.min(minWidth, Math.max(4, availableWidth)));
 }
 
 /**
@@ -336,15 +574,24 @@ export function renderStatusTable(
   const selectorColumn = options?.selectorColumn;
   const compact = options?.compact ?? false;
   const maxWidth = options?.maxWidth ?? Number.POSITIVE_INFINITY;
+  const styled = options?.styled ?? false;
   const compactHeader = maxWidth < 68;
-  const compactSlotWidth = maxWidth < 56 ? 8 : 12;
   const compactPlanWidth = maxWidth < 56 ? 4 : 6;
   const compactStatusWidth = maxWidth < 56 ? 12 : 18;
+  const compactSlotHeader = compactHeader ? "ID" : "SLOT";
+  const compactSlotWidth = resolveCompactSlotWidth(
+    statuses,
+    Boolean(selectorColumn),
+    maxWidth,
+    getDisplayWidth(compactSlotHeader),
+    compactPlanWidth,
+    compactStatusWidth
+  );
   const rows = [
     compact
       ? [
           ...(selectorColumn ? [" "] : []),
-          compactHeader ? "ID" : "SLOT",
+          compactSlotHeader,
           compactHeader ? "P" : "PLAN",
           "5H",
           compactHeader ? "WK" : "WEEK",
@@ -376,32 +623,32 @@ export function renderStatusTable(
       compact
         ? [
             ...(selectorCell ? [selectorCell] : []),
-            truncateCell(item.name, compactSlotWidth),
+            styleNameCell(truncateCell(item.name, compactSlotWidth), styled),
             truncateCell(item.plan, compactPlanWidth),
             formatPercent(item.fiveHourLeftPercent),
             formatPercent(item.weeklyLeftPercent),
-            truncateCell(status, compactStatusWidth)
+            styleStatusCell(truncateCell(status, compactStatusWidth), item, styled)
           ]
         : [
             ...(selectorCell ? [selectorCell] : []),
-            item.name,
+            styleNameCell(item.name, styled),
             item.email ?? "-",
             item.plan,
             formatPercent(item.fiveHourLeftPercent),
             formatReset(item.fiveHourResetsAt),
             formatPercent(item.weeklyLeftPercent),
             formatReset(item.weeklyResetsAt),
-            status
+            styleStatusCell(status, item, styled)
           ]
     );
   }
 
   const widths = rows[0].map((_, columnIndex) =>
-    Math.max(...rows.map((row) => row[columnIndex].length))
+    Math.max(...rows.map((row) => getDisplayWidth(row[columnIndex])))
   );
 
   return rows
-    .map((row) => row.map((cell, index) => cell.padEnd(widths[index])).join("  "))
+    .map((row) => row.map((cell, index) => padCell(cell, widths[index])).join("  "))
     .join("\n");
 }
 

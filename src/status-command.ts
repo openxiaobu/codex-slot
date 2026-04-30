@@ -117,6 +117,97 @@ function renderSummaryLine(
 }
 
 /**
+ * 移除 ANSI 控制序列，避免布局计算把颜色码当成可见字符。
+ *
+ * @param value 可能包含 ANSI 样式的文本。
+ * @returns 去除 ANSI 控制符后的文本。
+ * @throws 无显式抛出。
+ */
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/**
+ * 判断字符是否应按双列宽展示。
+ *
+ * @param codePoint Unicode code point；必须来自单个字符迭代结果。
+ * @returns 中文、全角符号等宽字符返回 `true`，其他字符返回 `false`。
+ * @throws 无显式抛出。
+ */
+function isWideCodePoint(codePoint: number): boolean {
+  return (
+    codePoint >= 0x1100 &&
+    (
+      codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    )
+  );
+}
+
+/**
+ * 计算文本在常见等宽终端中的显示列宽。
+ *
+ * @param value 待计算的文本；允许包含 ANSI 样式。
+ * @returns 文本实际占用的显示列数。
+ * @throws 无显式抛出。
+ */
+function getDisplayWidth(value: string): number {
+  let width = 0;
+
+  for (const char of stripAnsi(value)) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    width += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+
+  return width;
+}
+
+/**
+ * 按显示宽度补齐右侧空格。
+ *
+ * @param value 原始文本；允许包含 ANSI 样式。
+ * @param width 目标显示列宽。
+ * @returns 右侧补齐后的文本。
+ * @throws 无显式抛出。
+ */
+function padVisible(value: string, width: number): string {
+  return `${value}${" ".repeat(Math.max(0, width - getDisplayWidth(value)))}`;
+}
+
+/**
+ * 将左右两组文本行渲染为双栏布局。
+ *
+ * 业务含义：
+ * 1. 宽屏状态页左侧展示账号列表，右侧展示当前账号与摘要。
+ * 2. 左栏高度通常更高，右栏缺失行需要自动补空，避免右侧内容把左表挤乱。
+ *
+ * @param leftLines 左栏文本行。
+ * @param rightLines 右栏文本行。
+ * @param gap 两栏之间的空格数量。
+ * @returns 合并后的双栏文本行。
+ * @throws 无显式抛出。
+ */
+function renderColumns(leftLines: string[], rightLines: string[], gap: number): string[] {
+  const leftWidth = Math.max(0, ...leftLines.map((line) => getDisplayWidth(line)));
+  const rowCount = Math.max(leftLines.length, rightLines.length);
+  const rows: string[] = [];
+
+  for (let index = 0; index < rowCount; index += 1) {
+    rows.push(`${padVisible(leftLines[index] ?? "", leftWidth)}${" ".repeat(gap)}${rightLines[index] ?? ""}`.trimEnd());
+  }
+
+  return rows;
+}
+
+/**
  * 进入交互式全屏缓冲区，并隐藏光标，确保后续重绘始终基于固定画布。
  *
  * @returns 无返回值。
@@ -231,7 +322,6 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
 
     const render = () => {
       const screenWidth = process.stdout.columns ?? 80;
-      const narrowScreen = screenWidth < 72;
       const styled = shouldUseAnsiStyle();
       const latestSnapshot = getStatusSnapshot();
       const statusSource = changed ? latestSnapshot.statuses : (initialStatuses ?? latestSnapshot.statuses);
@@ -253,31 +343,46 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         })
         .filter((item): item is AccountRuntimeStatus => item !== null);
       const currentItem = displayStatuses.find((item) => item.id === accounts[cursor]?.id) ?? null;
-
-      renderInteractiveScreen([
-        renderSectionHeader("accounts", screenWidth, styled),
-        renderStatusTable(displayStatuses, {
+      const wideLayout = screenWidth >= 104;
+      const leftWidth = wideLayout ? Math.max(68, Math.floor(screenWidth * 0.64)) : screenWidth;
+      const rightWidth = wideLayout ? Math.max(28, screenWidth - leftWidth - 3) : screenWidth;
+      const accountLines = [
+        renderSectionHeader("accounts", leftWidth, styled),
+        ...renderStatusTable(displayStatuses, {
           compact: true,
-          maxWidth: screenWidth,
+          maxWidth: leftWidth,
+          styled,
           selectorColumn: {
             enabledById: Object.fromEntries(accounts.map((account) => [account.id, account.enabled])),
             cursorAccountId: accounts[cursor]?.id ?? null
           }
-        }),
+        }).split("\n")
+      ];
+      const sideLines = [
+        renderSectionHeader("current", rightWidth, styled),
+        ...renderStatusDetails(currentItem, { maxWidth: rightWidth, header: false }).split("\n"),
         "",
-        renderDivider(screenWidth, styled),
-        renderSectionHeader("current", screenWidth, styled),
-        renderStatusDetails(currentItem, { maxWidth: screenWidth, header: false }),
-        "",
-        renderSectionHeader("summary", screenWidth, styled),
-        renderSummaryLine(summary, narrowScreen, styled),
+        renderSectionHeader("summary", rightWidth, styled),
+        renderSummaryLine(summary, rightWidth < 42, styled),
         `selected=${latestSnapshot.selectedName ?? "none"}`,
         "",
-        renderSectionHeader("help", screenWidth, styled),
+        renderSectionHeader("help", rightWidth, styled),
         bi(
-          narrowScreen ? "Space 切换，Enter / q 退出。" : "Space 切换启用状态，Enter / q 退出。",
-          narrowScreen ? "Space toggles, Enter or q exits." : "Space toggles enabled state, Enter or q exits."
+          rightWidth < 42 ? "Space 切换，Enter/q 退出。" : "Space 切换启用状态，Enter / q 退出。",
+          rightWidth < 42 ? "Space toggles, Enter/q exits." : "Space toggles enabled state, Enter / q exits."
         )
+      ];
+
+      if (wideLayout) {
+        renderInteractiveScreen(renderColumns(accountLines, sideLines, 3));
+        return;
+      }
+
+      renderInteractiveScreen([
+        ...accountLines,
+        "",
+        renderDivider(screenWidth, styled),
+        ...sideLines
       ]);
     };
 
