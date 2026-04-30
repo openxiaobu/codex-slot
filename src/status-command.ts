@@ -12,7 +12,6 @@ import {
   renderStatusTable,
   summarizeAccountStatuses
 } from "./status";
-import { refreshAllAccountUsage } from "./usage-sync";
 import { bi } from "./text";
 import type { AccountRuntimeStatus } from "./types";
 
@@ -319,6 +318,8 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
 
   return await new Promise<void>((resolve) => {
     let closed = false;
+    let refreshing = false;
+    let refreshStatusText: string | null = null;
 
     const render = () => {
       const screenWidth = process.stdout.columns ?? 80;
@@ -365,12 +366,10 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         renderSectionHeader("summary", rightWidth, styled),
         renderSummaryLine(summary, rightWidth < 42, styled),
         `selected=${latestSnapshot.selectedName ?? "none"}`,
+        ...(refreshStatusText ? [`refresh=${refreshStatusText}`] : []),
         "",
         renderSectionHeader("help", rightWidth, styled),
-        bi(
-          rightWidth < 42 ? "Space 切换，Enter/q 退出。" : "Space 切换启用状态，Enter / q 退出。",
-          rightWidth < 42 ? "Space toggles, Enter/q exits." : "Space toggles enabled state, Enter / q exits."
-        )
+        "↑/↓ move    Space toggle    r refresh    Enter/q exit"
       ];
 
       if (wideLayout) {
@@ -412,7 +411,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
       resolve();
     };
 
-    const onKeypress = (_input: string, key: readline.Key) => {
+    const onKeypress = async (_input: string, key: readline.Key) => {
       if (key.name === "up") {
         const nextCursor = Math.max(0, cursor - 1);
         if (nextCursor !== cursor) {
@@ -436,6 +435,32 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         changed = true;
         applyChanges();
         render();
+        return;
+      }
+
+      if (key.name === "r") {
+        if (refreshing) {
+          return;
+        }
+
+        refreshing = true;
+        applyChanges();
+        refreshStatusText = "refreshing";
+        render();
+
+        try {
+          const refreshed = await refreshStatusSnapshot();
+          initialStatuses = refreshed.statuses;
+          refreshStatusText = "done";
+        } catch (error) {
+          refreshStatusText = error instanceof Error ? error.message : String(error);
+        } finally {
+          refreshing = false;
+        }
+
+        if (!closed) {
+          render();
+        }
         return;
       }
 
