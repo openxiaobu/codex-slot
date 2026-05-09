@@ -265,6 +265,7 @@ test("默认启动会把实际端口同步到单一 provider 配置", async () =
     assert.equal("require_api_key" in cslotConfig.server, false);
     assert.match(codexConfig, /\[model_providers\.cslot\]/);
     assert.match(codexConfig, new RegExp(`base_url = "http://127\\.0\\.0\\.1:${actualPort}/v1"`));
+    assert.match(codexConfig, /requires_openai_auth = true/);
     assert.doesNotMatch(codexConfig, /experimental_bearer_token/);
     assert.doesNotMatch(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
     assert.doesNotMatch(codexConfig, /Authorization = "Bearer/);

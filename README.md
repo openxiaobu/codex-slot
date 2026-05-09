@@ -133,6 +133,7 @@ Instead it:
 name = "cslot"
 base_url = "http://127.0.0.1:4399/v1"
 wire_api = "responses"
+requires_openai_auth = true
 ```
 
 Behavior:
@@ -142,6 +143,7 @@ Behavior:
 - Other providers and settings in `config.toml` are left untouched
 - If you start with `--port`, the port is saved to `~/.cslot/config.yaml`
 - If you start without `--port`, `4399` is preferred first and the next free port is chosen automatically on conflict, and the actual chosen port is written back to `~/.cslot/config.yaml` and the managed provider block
+- `requires_openai_auth = true` keeps Codex App treating the local cslot provider as a ChatGPT-authenticated provider, so plugin navigation and trusted plugin runtimes are not disabled as API-key/custom-provider mode
 - `/backend-api/*` requests are forwarded to ChatGPT backend with the current selected account's upstream token; client `Authorization` headers are not forwarded upstream
 
 ## Codex App Plugins

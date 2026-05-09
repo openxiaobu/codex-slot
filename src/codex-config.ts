@@ -75,7 +75,8 @@ function buildManagedProviderBlock(eol: string, config: CslotConfig): string {
     "[model_providers.cslot]",
     'name = "cslot"',
     `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
-    'wire_api = "responses"'
+    'wire_api = "responses"',
+    "requires_openai_auth = true"
   ];
 
   lines.push(PROVIDER_BLOCK_END_MARKER);
