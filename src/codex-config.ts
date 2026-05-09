@@ -70,17 +70,16 @@ function buildManagedModelProviderBlock(eol: string): string {
  * @returns 带标记的 provider 配置块文本。
  */
 function buildManagedProviderBlock(eol: string, config: CslotConfig): string {
-  return [
+  const lines = [
     PROVIDER_BLOCK_START_MARKER,
     "[model_providers.cslot]",
     'name = "cslot"',
     `base_url = "http://${config.server.host}:${config.server.port}/v1"`,
-    'wire_api = "responses"',
-    `experimental_bearer_token = "${config.server.api_key}"`,
-    "[model_providers.cslot.http_headers]",
-    `Authorization = "Bearer ${config.server.api_key}"`,
-    PROVIDER_BLOCK_END_MARKER
-  ].join(eol);
+    'wire_api = "responses"'
+  ];
+
+  lines.push(PROVIDER_BLOCK_END_MARKER);
+  return lines.join(eol);
 }
 
 /**
@@ -308,6 +307,62 @@ function findTableSectionRange(
  */
 function findProviderSectionRange(content: string): { start: number; end: number; value: string } | null {
   return findTableSectionRange(content, "[model_providers.cslot]");
+}
+
+/**
+ * 清理旧版本 cslot provider 中的本地鉴权配置。
+ *
+ * @param providerBlock 原始 `[model_providers.cslot]` 表块。
+ * @returns 移除 `experimental_bearer_token` 与 `http_headers.Authorization` 后的表块。
+ * @throws 无显式抛出。
+ */
+function sanitizeLegacyCslotProviderBlock(providerBlock: string): string {
+  const eol = detectEol(providerBlock);
+  const lines = providerBlock.split(/\r?\n/);
+  const sanitized: string[] = [];
+  let skippingLegacyHttpHeaders = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed === "[model_providers.cslot.http_headers]") {
+      skippingLegacyHttpHeaders = true;
+      continue;
+    }
+
+    if (skippingLegacyHttpHeaders && trimmed.startsWith("[") && !isChildTableHeader("[model_providers.cslot.http_headers]", trimmed)) {
+      skippingLegacyHttpHeaders = false;
+    }
+
+    if (skippingLegacyHttpHeaders) {
+      continue;
+    }
+
+    if (/^experimental_bearer_token\s*=/.test(trimmed)) {
+      continue;
+    }
+
+    sanitized.push(line);
+  }
+
+  return sanitized.join(eol);
+}
+
+/**
+ * 清理当前文本中已有 cslot provider 的旧本地鉴权配置。
+ *
+ * @param content 当前 `config.toml` 内容。
+ * @returns 已清理旧鉴权字段的文本内容。
+ * @throws 无显式抛出。
+ */
+function sanitizeExistingCslotProviderSection(content: string): string {
+  const range = findProviderSectionRange(content);
+
+  if (!range) {
+    return content;
+  }
+
+  return `${content.slice(0, range.start)}${sanitizeLegacyCslotProviderBlock(range.value)}${content.slice(range.end)}`;
 }
 
 /**
@@ -642,9 +697,10 @@ function buildManagedSnapshot(
       previousManagedState?.original_model_provider_next_table_header ??
       null,
     original_cslot_provider_block:
-      originalProviderSection?.value ??
-      previousManagedState?.original_cslot_provider_block ??
-      null,
+      (originalProviderSection ? sanitizeLegacyCslotProviderBlock(originalProviderSection.value) : null) ??
+      (previousManagedState?.original_cslot_provider_block
+        ? sanitizeLegacyCslotProviderBlock(previousManagedState.original_cslot_provider_block)
+        : null),
     original_cslot_provider_previous_table_header:
       (originalProviderSection
         ? findPreviousTableHeaderBeforeOffset(strippedCurrent, originalProviderSection.start)
@@ -702,7 +758,6 @@ export function applyManagedCodexConfig(
   if (!options?.silent) {
     console.log(bi(`已写入: ${targetFile}`, `Written to: ${targetFile}`));
     console.log(`base_url=http://${config.server.host}:${config.server.port}/v1`);
-    console.log(`api_key=${config.server.api_key}`);
     console.log(bi("提示: start 会自动接管 codex provider，stop 会精确恢复接管前内容。", "Note: start will manage the Codex provider automatically, and stop will restore the exact previous content."));
   }
 
@@ -729,7 +784,7 @@ export function deactivateManagedCodexConfig(): string | null {
 
   const current = fs.readFileSync(targetFile, "utf8");
   const eol = detectEol(current);
-  let restored = stripAllManagedBlocks(current);
+  let restored = sanitizeExistingCslotProviderSection(stripAllManagedBlocks(current));
   const existingModelProviderLine = findModelProviderLine(restored);
 
   if (!existingModelProviderLine && managedState.original_model_provider_block) {

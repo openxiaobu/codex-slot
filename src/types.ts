@@ -62,11 +62,11 @@ export interface CslotConfig {
   server: {
     host: string;
     port: number;
-    api_key: string;
     body_limit_mb: number;
   };
   upstream: {
     codex_base_url: string;
+    chatgpt_base_url: string;
     auth_base_url: string;
     oauth_client_id: string;
   };

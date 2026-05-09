@@ -124,8 +124,8 @@ function registerRuntimeCommands(program: Command): void {
         "",
         `${bi("说明", "Notes")}:`,
         `  ${bi(
-          "start 会自动接管 `~/.codex/config.toml`；默认优先使用 4399，冲突时自动顺延；每次启动都会重新生成本地 api_key；指定端口时会写入该端口；stop 会恢复接管前内容。",
-          "`start` will manage `~/.codex/config.toml` automatically; it prefers 4399 by default, switches to the next free port on conflict, generates a fresh local api_key on every start, writes the specified port when provided, and `stop` restores the previous content."
+          "start 会自动接管 `~/.codex/config.toml`；默认优先使用 4399，冲突时自动顺延；指定端口时会写入该端口；stop 会恢复接管前内容。",
+          "`start` will manage `~/.codex/config.toml` automatically; it prefers 4399 by default, switches to the next free port on conflict, writes the specified port when provided, and `stop` restores the previous content."
         )}`,
       ].join("\n")
     )

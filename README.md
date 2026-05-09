@@ -10,6 +10,7 @@
 - Manage multiple accounts or workspaces as separate slots
 - Refresh and cache the latest usage from the official usage endpoint
 - Expose a local provider endpoint for Codex
+- Proxy ChatGPT backend plugin requests through the selected cslot account
 - Apply local block rules for temporary, 5-hour, and weekly limits
 - Automatically switch `~/.codex/config.toml` to the `cslot` provider while the local proxy is running (and restore it on stop)
 
@@ -71,8 +72,8 @@ codex-slot start --port 4399
 ```
 
 `start` will automatically write the required provider config into `~/.codex/config.toml`.
-It prefers port `4399` by default and will switch to the next available port automatically when `4399` is busy, then sync that actual port into config:
-Each start also generates a fresh local `api_key` and syncs it into the managed provider config.
+It prefers port `4399` by default and will switch to the next available port automatically when `4399` is busy, then sync that actual port into config.
+The local provider does not use a separate cslot API key; cslot authenticates upstream requests with the selected Codex ChatGPT account token internally.
 
 ```bash
 codex-slot start
@@ -106,6 +107,7 @@ The project is intentionally split by responsibility:
 - `src/service-control.ts`: background service lifecycle management
 - `src/status-command.ts`: usage refresh output and interactive toggle UI
 - `src/codex-config.ts`: managed `~/.codex/config.toml` apply/restore logic
+- `src/backend-proxy-service.ts`: ChatGPT backend proxy for Codex plugin/runtime requests
 - `src/account-store.ts`, `src/usage-sync.ts`, `src/scheduler.ts`, `src/status.ts`: core domain and runtime logic
 - `src/text.ts`: shared bilingual text and locale-independent formatting helpers
 
@@ -131,17 +133,21 @@ Instead it:
 name = "cslot"
 base_url = "http://127.0.0.1:4399/v1"
 wire_api = "responses"
-experimental_bearer_token = "<your-local-api-key>"
 ```
 
 Behavior:
 
 - A managed marker block is inserted for `model_provider = "cslot"` and `[model_providers.cslot]`
-- On `cslot stop`, the original `model_provider` line and original `[model_providers.cslot]` block are restored from the saved snapshot
+- On `cslot stop`, the original `model_provider` line and original `[model_providers.cslot]` block are restored from the saved snapshot; legacy local bearer-token fields in the cslot provider are removed
 - Other providers and settings in `config.toml` are left untouched
 - If you start with `--port`, the port is saved to `~/.cslot/config.yaml`
 - If you start without `--port`, `4399` is preferred first and the next free port is chosen automatically on conflict, and the actual chosen port is written back to `~/.cslot/config.yaml` and the managed provider block
-- Every `start` rotates the local `api_key`, and the new value is written to both `~/.cslot/config.yaml` and the managed provider block
+- `/backend-api/*` requests are forwarded to ChatGPT backend with the current selected account's upstream token; client `Authorization` headers are not forwarded upstream
+
+## Codex App Plugins
+
+`codex-slot start` also switches the main `~/.codex` login state to the selected managed account while cslot is running.
+This keeps Codex app plugins that depend on the main ChatGPT login state working without a separate manual setup step.
 
 ## Data Directory
 

@@ -12,6 +12,7 @@
 - 将多个账号或工作空间作为独立槽位管理
 - 在需要时手动刷新 usage 缓存用于状态展示
 - 通过本地 provider 给 `Codex` 使用
+- 将 Codex 插件运行时的 ChatGPT backend 请求代理到当前 cslot 账号
 - 对临时限流、5 小时限制、周限制做本地熔断
 
 ## 安装
@@ -66,7 +67,7 @@ codex-slot start --port 4399
 
 `start` 会自动把需要的 provider 配置写入 `~/.codex/config.toml`。
 默认优先使用 `4399`，如果该端口被占用，会自动切换到下一个可用端口，并把实际启动端口同步写入配置。
-每次启动还会重新生成一个新的本地 `api_key`，并同步写入受管 provider 配置。
+cslot 本地 provider 不再需要独立 `api_key`；上游请求由 cslot 内部使用当前调度账号的 Codex ChatGPT token 完成鉴权。
 
 ```bash
 codex-slot start
@@ -100,6 +101,7 @@ codex-slot stop
 - `src/service-control.ts`：后台服务生命周期管理
 - `src/status-command.ts`：额度刷新输出与交互式启用开关界面
 - `src/codex-config.ts`：受管 `~/.codex/config.toml` 写入与恢复逻辑
+- `src/backend-proxy-service.ts`：Codex 插件与运行时请求使用的 ChatGPT backend 代理
 - `src/account-store.ts`、`src/usage-sync.ts`、`src/scheduler.ts`、`src/status.ts`：核心领域与运行时逻辑
 - `src/text.ts`：共享的中英双语文本与去 locale 化格式化工具
 
@@ -130,18 +132,22 @@ codex-slot stop
 name = "cslot"
 base_url = "http://127.0.0.1:4399/v1"
 wire_api = "responses"
-experimental_bearer_token = "<你的本地-api-key>"
 ```
 
 规则：
 
 - 会插入带标记的受管块，分别接管 `model_provider = "cslot"` 与 `[model_providers.cslot]`
-- `cslot stop` 会按快照恢复接管前的原始 `model_provider` 行和原始 `[model_providers.cslot]` 配置块
+- `cslot stop` 会按快照恢复接管前的原始 `model_provider` 行和原始 `[model_providers.cslot]` 配置块；旧版 cslot provider 里的本地 bearer-token 字段会被清理
 - `config.toml` 里其他 provider 和配置保持不变
 - 全局 `model` 不会改
 - 如果通过 `cslot start --port <端口>` 指定端口，会把端口写入 `~/.cslot/config.yaml`
 - 如果不指定端口，会优先尝试 `4399`，冲突时自动顺延到下一个空闲端口，并把实际启动端口写入 `~/.cslot/config.yaml` 与受管 provider 配置
-- 每次 `start` 都会轮换本地 `api_key`，并把新值同时写入 `~/.cslot/config.yaml` 与受管 provider 配置块
+- `/backend-api/*` 请求会透传到 ChatGPT backend，并由 cslot 内部替换为当前调度账号的上游 token；客户端传入的 `Authorization` 不会继续透传到上游
+
+## Codex App 插件
+
+`codex-slot start` 会在 cslot 运行期间把主 `~/.codex` 登录态切到当前调度账号。
+依赖主 ChatGPT 登录态的 Codex app 插件会自动复用这个登录态，不需要额外执行手工命令。
 
 ## 本地目录
 

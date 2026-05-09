@@ -8,7 +8,7 @@ import { hasCompleteCodexAuthState } from "../account-store";
 import { applyManagedCodexConfig, deactivateManagedCodexConfig } from "../codex-config";
 import { applyManagedCodexAuth, deactivateManagedCodexAuth } from "../codex-auth";
 import { parsePort } from "../cli-helpers";
-import { getPidPath, getServiceLogPath, loadConfig, rotateServerApiKey, saveConfig } from "../config";
+import { getPidPath, getServiceLogPath, loadConfig, saveConfig } from "../config";
 import { pickBestAccount } from "../scheduler";
 import type { ManagedAccount } from "../types";
 
@@ -287,7 +287,6 @@ export async function startManagedService(portOverride?: string): Promise<{
   port: number;
   logPath: string;
   autoSwitched: boolean;
-  apiKeyRotated: boolean;
 }> {
   const config = loadConfig();
   const previousConfig = structuredClone(config);
@@ -300,8 +299,7 @@ export async function startManagedService(portOverride?: string): Promise<{
       pid: runningPid,
       port: config.server.port,
       logPath: getServiceLogPath(),
-      autoSwitched: false,
-      apiKeyRotated: false
+      autoSwitched: false
     };
   }
 
@@ -310,9 +308,7 @@ export async function startManagedService(portOverride?: string): Promise<{
     saveConfig(config);
   }
 
-  // 每次真正启动服务前都轮换一次本地 api_key，并让受管 config.toml 使用同一新值。
-  const persistedConfig = rotateServerApiKey(config);
-  applyManagedCodexConfig(undefined, { config: persistedConfig });
+  applyManagedCodexConfig(undefined, { config });
   applyManagedAuthIfPossible();
 
   const logPath = getServiceLogPath();
@@ -346,8 +342,7 @@ export async function startManagedService(portOverride?: string): Promise<{
     pid: childPid,
     port,
     logPath,
-    autoSwitched,
-    apiKeyRotated: true
+    autoSwitched
   };
 }
 

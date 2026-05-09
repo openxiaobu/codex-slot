@@ -54,7 +54,6 @@ function createBaseDependencies(overrides = {}) {
       server: {
         host: "127.0.0.1",
         port: 4399,
-        api_key: "test-key",
         body_limit_mb: 512
       },
       upstream: {

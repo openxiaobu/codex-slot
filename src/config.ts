@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,23 +20,23 @@ const configSchema = z.object({
     .object({
       host: z.string().default("127.0.0.1"),
       port: z.number().int().default(4399),
-      api_key: z.string().default("cslot-defaultkey"),
       body_limit_mb: z.number().positive().default(512)
     })
     .default({
       host: "127.0.0.1",
       port: 4399,
-      api_key: "cslot-defaultkey",
       body_limit_mb: 512
     }),
   upstream: z
     .object({
       codex_base_url: z.string().default("https://chatgpt.com/backend-api/codex"),
+      chatgpt_base_url: z.string().default("https://chatgpt.com/backend-api"),
       auth_base_url: z.string().default("https://auth.openai.com"),
       oauth_client_id: z.string().default("app_EMoamEEZ73f0CkXaXp7hrann")
     })
     .default({
       codex_base_url: "https://chatgpt.com/backend-api/codex",
+      chatgpt_base_url: "https://chatgpt.com/backend-api",
       auth_base_url: "https://auth.openai.com",
       oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
     }),
@@ -51,18 +50,6 @@ const configSchema = z.object({
  */
 export function getUserHomeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || os.homedir();
-}
-
-/**
- * 生成新的本地服务 API Key。
- *
- * 该 key 仅用于本地代理服务与受管 `~/.codex/config.toml` 之间的鉴权，
- * 不会影响上游官方 access token。
- *
- * @returns 随机生成的本地 API Key。
- */
-export function generateServerApiKey(): string {
-  return `cslot-${crypto.randomBytes(18).toString("hex")}`;
 }
 
 /**
@@ -139,17 +126,16 @@ export function loadConfig(): CslotConfig {
   const configPath = getConfigPath();
 
   if (!fs.existsSync(configPath)) {
-    const defaultApiKey = generateServerApiKey();
     const defaultConfig: CslotConfig = {
       version: 1,
       server: {
         host: "127.0.0.1",
         port: 4399,
-        api_key: defaultApiKey,
         body_limit_mb: 512
       },
       upstream: {
         codex_base_url: "https://chatgpt.com/backend-api/codex",
+        chatgpt_base_url: "https://chatgpt.com/backend-api",
         auth_base_url: "https://auth.openai.com",
         oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
       },
@@ -163,24 +149,7 @@ export function loadConfig(): CslotConfig {
   const raw = fs.readFileSync(configPath, "utf8");
   const parsed = raw.trim() ? YAML.parse(raw) : {};
   const normalized = configSchema.parse(parsed);
-  let changed = JSON.stringify(parsed) !== JSON.stringify(normalized);
-
-  if (
-    (!parsed || typeof parsed !== "object" || !("server" in parsed)) ||
-    !(parsed.server && typeof parsed.server === "object" && "api_key" in parsed.server)
-  ) {
-    normalized.server.api_key = generateServerApiKey();
-    changed = true;
-  }
-
-  // 兼容历史默认值，统一迁移到新的随机本地 key。
-  if (
-    normalized.server.api_key === "local-only-key" ||
-    normalized.server.api_key === "cslot-defaultkey"
-  ) {
-    normalized.server.api_key = generateServerApiKey();
-    changed = true;
-  }
+  const changed = JSON.stringify(parsed) !== JSON.stringify(normalized);
 
   // 当旧配置缺少新字段时，将补全后的配置回写，便于用户直接编辑查看。
   if (changed) {
@@ -201,28 +170,6 @@ export function saveConfig(config: CslotConfig): void {
   const configPath = getConfigPath();
   const text = YAML.stringify(config);
   fs.writeFileSync(configPath, text, "utf8");
-}
-
-/**
- * 刷新本地代理服务 API Key，并将结果写回配置文件。
- *
- * 业务语义：
- * 1. 每次真正启动本地代理前都重新生成一个新的本地 key。
- * 2. 该 key 会同时驱动本地服务鉴权与 `~/.codex/config.toml` 中的 provider 头。
- * 3. 若调用方已经持有最新配置对象，可直接传入，避免重复读取磁盘。
- *
- * @param config 可选的当前配置对象；未传入时会自动从磁盘读取。
- * @returns 已写回磁盘的最新配置对象，其中 `server.api_key` 一定是新值。
- * @throws 当配置读写失败时抛出文件系统错误。
- */
-export function rotateServerApiKey(config?: CslotConfig): CslotConfig {
-  const nextConfig = config ?? loadConfig();
-
-  // 每次启动前轮换本地鉴权 key，避免长期复用同一个静态口令。
-  nextConfig.server.api_key = generateServerApiKey();
-  saveConfig(nextConfig);
-
-  return nextConfig;
 }
 
 /**

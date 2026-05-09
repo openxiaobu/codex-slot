@@ -36,15 +36,6 @@ export async function handleStart(portOverride?: string): Promise<void> {
     );
   }
 
-  if (result.apiKeyRotated) {
-    console.log(
-      bi(
-        "本次启动已重新生成本地 api_key，并同步写入受管配置。",
-        "A new local api_key was generated for this start and synced to the managed config."
-      )
-    );
-  }
-
   console.log(bi(`服务已启动: http://${config.server.host}:${result.port}`, `Service started: http://${config.server.host}:${result.port}`));
   console.log(`PID: ${result.pid}`);
   console.log(bi(`日志: ${result.logPath}`, `Log: ${result.logPath}`));

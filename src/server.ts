@@ -1,10 +1,10 @@
 import Fastify from "fastify";
 import type { IncomingHttpHeaders } from "node:http";
 import { loadConfig } from "./config";
+import { proxyChatGptBackendWithRetry } from "./backend-proxy-service";
 import { proxyResponsesWithRetry } from "./proxy-retry-service";
 import { collectAccountStatuses } from "./status";
 import { pickBestAccount } from "./scheduler";
-import { bi } from "./text";
 import { refreshAccountUsage } from "./usage-sync";
 
 interface ProxyReply {
@@ -19,15 +19,6 @@ interface ProxyReply {
   send: (payload: unknown) => void;
   header: (key: string, value: string) => unknown;
   hijack: () => void;
-}
-
-function getBearerToken(headerValue?: string): string | null {
-  if (!headerValue) {
-    return null;
-  }
-
-  const match = /^Bearer\s+(.+)$/i.exec(headerValue);
-  return match?.[1] ?? null;
 }
 
 /**
@@ -65,22 +56,6 @@ export async function startServer(port: number): Promise<void> {
   const app = Fastify({
     logger: false,
     bodyLimit: Math.floor(config.server.body_limit_mb * 1024 * 1024)
-  });
-
-  app.addHook("onRequest", async (request, reply) => {
-    if (request.url === "/health") {
-      return;
-    }
-
-    const bearer = getBearerToken(request.headers.authorization);
-    if (bearer !== config.server.api_key) {
-      return reply.code(401).send({
-        error: {
-          message: bi("本地 API Key 无效", "Invalid local API key"),
-          type: "invalid_local_api_key"
-        }
-      });
-    }
   });
 
   app.get("/health", async () => {
@@ -126,6 +101,42 @@ export async function startServer(port: number): Promise<void> {
     reply.raw.end();
   };
 
+  const backendProxyHandler = async (
+    request: {
+      method: string;
+      url: string;
+      headers: IncomingHttpHeaders;
+      body?: NodeJS.ReadableStream;
+    },
+    reply: ProxyReply
+  ) => {
+    const requestBody = request.body ? await readRawRequestBody(request.body) : undefined;
+    const result = await proxyChatGptBackendWithRetry({
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body: requestBody
+    });
+
+    if (result.type === "send") {
+      reply.code(result.statusCode);
+      for (const [headerName, headerValue] of Object.entries(result.headers ?? {})) {
+        reply.header(headerName, headerValue);
+      }
+      reply.send(result.payload);
+      return;
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(result.statusCode, result.headers);
+
+    for await (const chunk of result.body) {
+      reply.raw.write(chunk);
+    }
+
+    reply.raw.end();
+  };
+
   await app.register(async (proxyApp) => {
     // 代理路由需要原样透传 body，不能在本地先做 JSON 解析与大小限制拦截。
     proxyApp.removeAllContentTypeParsers();
@@ -139,6 +150,25 @@ export async function startServer(port: number): Promise<void> {
 
     proxyApp.post("/backend-api/codex/responses", { bodyLimit: Number.MAX_SAFE_INTEGER }, async (request, reply) => {
       await proxyHandler(request.body as NodeJS.ReadableStream, request.headers, reply);
+    });
+
+    proxyApp.route({
+      method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+      url: "/backend-api/*",
+      bodyLimit: Number.MAX_SAFE_INTEGER,
+      handler: async (request, reply) => {
+        const body = request.body as NodeJS.ReadableStream | undefined;
+
+        await backendProxyHandler(
+          {
+            method: request.method,
+            url: request.url,
+            headers: request.headers,
+            body
+          },
+          reply
+        );
+      }
     });
   });
 

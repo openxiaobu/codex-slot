@@ -207,11 +207,11 @@ function prepareManagedProxyFixture(homeDir, upstreamPort) {
       server: {
         host: "127.0.0.1",
         port: 4399,
-        api_key: "cslot-test-key",
         body_limit_mb: 512
       },
       upstream: {
         codex_base_url: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
+        chatgpt_base_url: `http://127.0.0.1:${upstreamPort}/backend-api`,
         auth_base_url: "https://auth.openai.com",
         oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
       },
@@ -246,7 +246,7 @@ function isPortFree(port) {
   });
 }
 
-test("默认启动会把实际端口与 api_key 同步到单一 provider 配置", async () => {
+test("默认启动会把实际端口同步到单一 provider 配置", async () => {
   const homeDir = createIsolatedHome();
 
   try {
@@ -261,18 +261,13 @@ test("默认启动会把实际端口与 api_key 同步到单一 provider 配置"
     const codexConfig = readCodexConfig(homeDir);
 
     assert.equal(cslotConfig.server.port, actualPort);
-    assert.match(cslotConfig.server.api_key, /^cslot-/);
+    assert.equal("api_key" in cslotConfig.server, false);
+    assert.equal("require_api_key" in cslotConfig.server, false);
     assert.match(codexConfig, /\[model_providers\.cslot\]/);
     assert.match(codexConfig, new RegExp(`base_url = "http://127\\.0\\.0\\.1:${actualPort}/v1"`));
-    assert.match(
-      codexConfig,
-      new RegExp(`experimental_bearer_token = "${cslotConfig.server.api_key}"`)
-    );
-    assert.match(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
-    assert.match(
-      codexConfig,
-      new RegExp(`Authorization = "Bearer ${cslotConfig.server.api_key}"`)
-    );
+    assert.doesNotMatch(codexConfig, /experimental_bearer_token/);
+    assert.doesNotMatch(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
+    assert.doesNotMatch(codexConfig, /Authorization = "Bearer/);
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -299,15 +294,8 @@ test("当 4399 被占用时自动顺延，并把实际端口同步写回配置",
 
     assert.equal(cslotConfig.server.port, 4400);
     assert.match(codexConfig, /base_url = "http:\/\/127\.0\.0\.1:4400\/v1"/);
-    assert.match(
-      codexConfig,
-      new RegExp(`experimental_bearer_token = "${cslotConfig.server.api_key}"`)
-    );
-    assert.match(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
-    assert.match(
-      codexConfig,
-      new RegExp(`Authorization = "Bearer ${cslotConfig.server.api_key}"`)
-    );
+    assert.doesNotMatch(codexConfig, /experimental_bearer_token/);
+    assert.doesNotMatch(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
     await closeServer(occupiedServer);
@@ -339,11 +327,9 @@ test("代理转发 400 后服务仍保持存活", async () => {
 
     await waitForHealth(proxyPort);
 
-    const cslotConfig = readCslotConfig(homeDir);
     const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${cslotConfig.server.api_key}`,
         "content-type": "application/json"
       },
       body: JSON.stringify({ model: "test-model", input: "hello" })
@@ -384,11 +370,9 @@ test("代理转发 200 后服务仍保持存活", async () => {
 
     await waitForHealth(proxyPort);
 
-    const cslotConfig = readCslotConfig(homeDir);
     const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${cslotConfig.server.api_key}`,
         "content-type": "application/json"
       },
       body: JSON.stringify({ model: "test-model", input: "hello" })
@@ -396,6 +380,55 @@ test("代理转发 200 后服务仍保持存活", async () => {
 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true });
+
+    await waitForHealth(proxyPort);
+  } finally {
+    await runCli(homeDir, ["stop"]).catch(() => {});
+    await closeServer(upstreamServer);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("backend 代理转发 aura/site_status 并替换为官方账号 token", async () => {
+  const homeDir = createIsolatedHome();
+  const seen = [];
+  const { server: upstreamServer, port: upstreamPort } = await startUpstreamServer((req, res) => {
+    if (!req.url.startsWith("/backend-api/aura/site_status")) {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+
+    seen.push({
+      url: req.url,
+      authorization: req.headers.authorization,
+      accountId: req.headers["chatgpt-account-id"]
+    });
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ feature_status: { agent: false } }));
+  });
+
+  try {
+    prepareManagedProxyFixture(homeDir, upstreamPort);
+
+    const { stdout } = await runCli(homeDir, ["start"]);
+    const portMatch = stdout.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+    assert.ok(portMatch);
+    const proxyPort = Number(portMatch[1]);
+
+    await waitForHealth(proxyPort);
+
+    const response = await fetch(
+      `http://127.0.0.1:${proxyPort}/backend-api/aura/site_status?site_url=https%3A%2F%2Flocal.aihelp.net%2Fdashboard%2F&url_request_source=codex_browser_use`
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { feature_status: { agent: false } });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].authorization, "Bearer test-access-token");
+    assert.equal(seen[0].accountId, "test-account-id");
+    assert.match(seen[0].url, /site_url=https%3A%2F%2Flocal\.aihelp\.net%2Fdashboard%2F/);
 
     await waitForHealth(proxyPort);
   } finally {
