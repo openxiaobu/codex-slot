@@ -1,4 +1,5 @@
 import readline from "node:readline";
+import { hasCompleteCodexAuthState } from "./account-store";
 import { listAccounts } from "./app/account-service";
 import {
   getStatusSnapshot,
@@ -7,13 +8,18 @@ import {
 } from "./app/status-service";
 import { pickBestAccount } from "./scheduler";
 import {
+  getSelectedCodexAuthAccountId,
+  setSelectedCodexAuthAccountId
+} from "./state";
+import { applyManagedCodexAuth, deactivateManagedCodexAuth } from "./codex-auth";
+import {
   collectAccountStatuses,
   renderStatusDetails,
   renderStatusTable,
   summarizeAccountStatuses
 } from "./status";
 import { bi } from "./text";
-import type { AccountRuntimeStatus } from "./types";
+import type { AccountRuntimeStatus, ManagedAccount } from "./types";
 
 export interface StatusCommandOptions {
   interactive?: boolean;
@@ -246,19 +252,29 @@ function renderInteractiveScreen(lines: string[]): void {
  * 计算交互式状态面板的初始光标位置。
  *
  * 业务规则：
- * 1. 优先定位到当前自动调度选中的账号。
- * 2. 若没有自动选中账号，则回退到首个可用账号。
- * 3. 若所有账号都不可用，则回退到首个已启用账号。
+ * 1. 优先定位到用户手动选择的 Codex App 登录态账号。
+ * 2. 若没有手动选择，则回退到当前自动调度选中的账号。
+ * 3. 若没有自动选中账号，则回退到首个可用账号。
+ * 4. 若所有账号都不可用，则回退到首个已启用账号。
  *
  * @param accounts 已按展示顺序排好的账号列表。
  * @param statuses 当前账号运行时状态快照。
+ * @param selectedAuthAccountId 用户手动选择的 Codex App 登录态账号 id。
  * @returns 初始光标所在的数组下标。
  * @throws 无显式抛出。
  */
 function resolveInitialCursorIndex(
   accounts: Array<{ id: string; enabled: boolean }>,
-  statuses: AccountRuntimeStatus[]
+  statuses: AccountRuntimeStatus[],
+  selectedAuthAccountId: string | null
 ): number {
+  if (selectedAuthAccountId) {
+    const selectedAuthIndex = accounts.findIndex((account) => account.id === selectedAuthAccountId);
+    if (selectedAuthIndex >= 0) {
+      return selectedAuthIndex;
+    }
+  }
+
   const selected = pickBestAccount();
   if (selected) {
     const selectedIndex = accounts.findIndex((account) => account.id === selected.account.id);
@@ -279,6 +295,32 @@ function resolveInitialCursorIndex(
   }
 
   return 0;
+}
+
+/**
+ * 将状态面板中选中的账号立即应用为 Codex App 主登录态。
+ *
+ * 业务含义：
+ * 1. 该操作只切换主 `~/.codex/auth.json` 的来源账号，不改变代理调度顺序。
+ * 2. 被选择账号可以是 disabled，因为 enabled 只控制代理请求调度。
+ * 3. 登录态不完整时拒绝保存选择，避免下一次 `start` 静默失败或切错账号。
+ *
+ * @param account 用户在状态面板中选中的受管账号。
+ * @returns 失败时返回错误文本；成功时返回 `null`。
+ * @throws 无显式抛出；文件系统错误会转为返回文本。
+ */
+function applyCodexAuthSelection(account: ManagedAccount): string | null {
+  try {
+    if (!hasCompleteCodexAuthState(account.codex_home)) {
+      return `账号 ${account.id} 缺少完整 auth.json`;
+    }
+
+    setSelectedCodexAuthAccountId(account.id);
+    applyManagedCodexAuth(account.codex_home, { sourceAccountId: account.id });
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 /**
@@ -311,7 +353,12 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
   }
 
   const accounts = [...accountsFromConfig].sort((left, right) => left.name.localeCompare(right.name));
-  let cursor = resolveInitialCursorIndex(accounts, initialStatuses ?? collectAccountStatuses());
+  let selectedAuthAccountId = getSelectedCodexAuthAccountId();
+  let cursor = resolveInitialCursorIndex(
+    accounts,
+    initialStatuses ?? collectAccountStatuses(),
+    selectedAuthAccountId
+  );
   let changed = false;
 
   enterInteractiveScreen();
@@ -337,9 +384,11 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
             return null;
           }
 
+          const markers = `${account.id === autoSelectedId ? "*" : ""}${account.id === selectedAuthAccountId ? "@" : ""}`;
+
           return {
             ...status,
-            name: account.id === autoSelectedId ? `${status.name}*` : status.name
+            name: markers ? `${status.name}${markers}` : status.name
           };
         })
         .filter((item): item is AccountRuntimeStatus => item !== null);
@@ -365,11 +414,12 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         "",
         renderSectionHeader("summary", rightWidth, styled),
         renderSummaryLine(summary, rightWidth < 42, styled),
-        `selected=${latestSnapshot.selectedName ?? "none"}`,
+        `scheduler=${latestSnapshot.selectedName ?? "none"}`,
+        `codex_auth=${selectedAuthAccountId ?? "none"}`,
         ...(refreshStatusText ? [`refresh=${refreshStatusText}`] : []),
         "",
         renderSectionHeader("help", rightWidth, styled),
-        "↑/↓ move    Space toggle    r refresh    Enter/q exit"
+        "↑/↓ move    Space toggle    a app-auth    c clear    r refresh    Enter/q exit"
       ];
 
       if (wideLayout) {
@@ -438,6 +488,34 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         return;
       }
 
+      if (key.name === "a") {
+        const account = accounts[cursor];
+        if (!account) {
+          return;
+        }
+
+        const errorMessage = applyCodexAuthSelection(account);
+        if (errorMessage) {
+          refreshStatusText = errorMessage;
+          render();
+          return;
+        }
+
+        selectedAuthAccountId = account.id;
+        refreshStatusText = `codex_auth=${account.id}`;
+        render();
+        return;
+      }
+
+      if (key.name === "c") {
+        selectedAuthAccountId = null;
+        setSelectedCodexAuthAccountId(null);
+        deactivateManagedCodexAuth();
+        refreshStatusText = "codex_auth=cleared";
+        render();
+        return;
+      }
+
       if (key.name === "r") {
         if (refreshing) {
           return;
@@ -497,11 +575,12 @@ export async function handleStatus(options?: StatusCommandOptions): Promise<void
 
   const displayStatuses = snapshot.statuses.map((item) => ({
     ...item,
-    name: item.id === pickBestAccount()?.account.id ? `${item.name}*` : item.name
+    name: `${item.name}${item.id === pickBestAccount()?.account.id ? "*" : ""}${item.id === snapshot.codexAuthAccountId ? "@" : ""}`
   }));
 
   console.log(renderStatusTable(displayStatuses));
   console.log("");
   console.log(`available=${snapshot.summary.available} 5h_limited=${snapshot.summary.fiveHourLimited} weekly_limited=${snapshot.summary.weeklyLimited}`);
-  console.log(`selected=${snapshot.selectedName ?? "none"}`);
+  console.log(`scheduler=${snapshot.selectedName ?? "none"}`);
+  console.log(`codex_auth=${snapshot.codexAuthAccountId ?? "none"}`);
 }

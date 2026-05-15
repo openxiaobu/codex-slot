@@ -229,6 +229,109 @@ function prepareManagedProxyFixture(homeDir, upstreamPort) {
 }
 
 /**
+ * 写入一个最小完整的受管账号登录态，供 start 登录态接管测试复用。
+ *
+ * @param managedHome 受管账号 HOME 目录。
+ * @param tokenLabel 用于区分测试账号的 token 前缀。
+ * @returns 无返回值。
+ * @throws 当目录或文件写入失败时抛出文件系统错误。
+ */
+function writeManagedAuthState(managedHome, tokenLabel) {
+  const managedCodexDir = path.join(managedHome, ".codex");
+
+  fs.mkdirSync(managedCodexDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(managedCodexDir, "auth.json"),
+    JSON.stringify(
+      {
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: `${tokenLabel}-access-token`,
+          refresh_token: `${tokenLabel}-refresh-token`,
+          account_id: `${tokenLabel}-account-id`
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+}
+
+/**
+ * 为 start 登录态接管测试准备两个受管账号，并写入手动选择状态。
+ *
+ * @param homeDir 测试专用 HOME 目录。
+ * @returns 两个受管账号 HOME 路径。
+ * @throws 当目录或配置写入失败时抛出文件系统错误。
+ */
+function prepareManualAuthSelectionFixture(homeDir) {
+  const cslotDir = path.join(homeDir, ".cslot");
+  const slotAHome = path.join(cslotDir, "homes", "slot-a");
+  const slotBHome = path.join(cslotDir, "homes", "slot-b");
+
+  writeManagedAuthState(slotAHome, "slot-a");
+  writeManagedAuthState(slotBHome, "slot-b");
+
+  fs.mkdirSync(cslotDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(cslotDir, "config.yaml"),
+    YAML.stringify({
+      version: 1,
+      server: {
+        host: "127.0.0.1",
+        port: 4399,
+        body_limit_mb: 512
+      },
+      upstream: {
+        codex_base_url: "https://chatgpt.com/backend-api/codex",
+        chatgpt_base_url: "https://chatgpt.com/backend-api",
+        auth_base_url: "https://auth.openai.com",
+        oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
+      },
+      accounts: [
+        {
+          id: "slot-a",
+          name: "slot-a",
+          codex_home: slotAHome,
+          enabled: true
+        },
+        {
+          id: "slot-b",
+          name: "slot-b",
+          codex_home: slotBHome,
+          enabled: true
+        }
+      ]
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(cslotDir, "state.json"),
+    `${JSON.stringify(
+      {
+        state_version: 2,
+        selected_codex_auth_account_id: "slot-b",
+        account_blocks: {},
+        usage_cache: {},
+        usage_refresh_errors: {},
+        scheduler_stats: {},
+        managed_codex_auth: null,
+        managed_codex_config: null
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+
+  return {
+    slotAHome,
+    slotBHome
+  };
+}
+
+/**
  * 检查指定端口当前是否可监听，用于让集成测试兼容真实环境里已有的本地占用。
  *
  * @param port 待检查端口。
@@ -300,6 +403,27 @@ test("当 4399 被占用时自动顺延，并把实际端口同步写回配置",
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
     await closeServer(occupiedServer);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("start 优先使用状态面板手动选择的 Codex App 登录态账号", async () => {
+  const homeDir = createIsolatedHome();
+
+  try {
+    prepareManualAuthSelectionFixture(homeDir);
+
+    const { stdout } = await runCli(homeDir, ["start"]);
+    const baseUrlMatch = stdout.match(/base_url=http:\/\/127\.0\.0\.1:(\d+)\/v1/);
+    assert.ok(baseUrlMatch);
+
+    await waitForHealth(Number(baseUrlMatch[1]));
+
+    const auth = JSON.parse(fs.readFileSync(path.join(homeDir, ".codex", "auth.json"), "utf8"));
+    assert.equal(auth.tokens.access_token, "slot-b-access-token");
+    assert.equal(auth.tokens.account_id, "slot-b-account-id");
+  } finally {
+    await runCli(homeDir, ["stop"]).catch(() => {});
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });

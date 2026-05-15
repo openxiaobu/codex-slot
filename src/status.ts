@@ -252,7 +252,7 @@ function styleStatusCell(status: string, item: AccountRuntimeStatus, styled: boo
 }
 
 /**
- * 对当前自动选中账号的名称做轻量强调。
+ * 对当前自动调度账号或 Codex App 登录态账号的名称做轻量强调。
  *
  * @param name 账号展示名称。
  * @param styled 是否启用 ANSI 样式。
@@ -260,7 +260,7 @@ function styleStatusCell(status: string, item: AccountRuntimeStatus, styled: boo
  * @throws 无显式抛出。
  */
 function styleNameCell(name: string, styled: boolean): string {
-  if (!styled || !name.endsWith("*")) {
+  if (!styled || (!name.includes("*") && !name.includes("@"))) {
     return name;
   }
 

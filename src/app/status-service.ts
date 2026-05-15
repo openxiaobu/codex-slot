@@ -4,12 +4,14 @@ import {
   collectAccountStatuses,
   summarizeAccountStatuses
 } from "../status";
+import { getSelectedCodexAuthAccountId } from "../state";
 import { refreshAllAccountUsage } from "../usage-sync";
 import type { AccountRuntimeStatus } from "../types";
 
 export interface StatusSnapshot {
   statuses: AccountRuntimeStatus[];
   selectedName: string | null;
+  codexAuthAccountId: string | null;
   summary: {
     available: number;
     fiveHourLimited: number;
@@ -41,6 +43,7 @@ export function getStatusSnapshot(): StatusSnapshot {
   return {
     statuses,
     selectedName: selected?.account.name ?? null,
+    codexAuthAccountId: getSelectedCodexAuthAccountId(),
     summary: summarizeAccountStatuses(statuses)
   };
 }

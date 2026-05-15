@@ -170,6 +170,7 @@ export interface ManagedCodexAuthState {
 
 export interface CslotState {
   state_version: number;
+  selected_codex_auth_account_id?: string | null;
   account_blocks: Record<string, AccountBlockState>;
   usage_cache: Record<string, UsageRefreshResult>;
   usage_refresh_errors: Record<string, UsageRefreshError>;

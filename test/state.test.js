@@ -45,7 +45,8 @@ test("state 读取旧格式时自动补齐当前 schema 字段", () => {
   try {
     const state = withHome(homeDir, () => loadState());
 
-    assert.equal(state.state_version, 1);
+    assert.equal(state.state_version, 2);
+    assert.equal(state.selected_codex_auth_account_id, null);
     assert.deepEqual(state.scheduler_stats, {});
     assert.equal(state.managed_codex_auth, null);
     assert.equal(state.managed_codex_config, null);
@@ -63,6 +64,7 @@ test("state 保存时写入版本并通过临时文件原子替换", () => {
     withHome(homeDir, () => {
       saveState({
         state_version: 1,
+        selected_codex_auth_account_id: "slot-a",
         account_blocks: {},
         usage_cache: {},
         usage_refresh_errors: {},
@@ -80,7 +82,8 @@ test("state 保存时写入版本并通过临时文件原子替换", () => {
     const saved = JSON.parse(fs.readFileSync(statePath, "utf8"));
     const tempFiles = fs.readdirSync(cslotDir).filter((item) => item.includes(".tmp"));
 
-    assert.equal(saved.state_version, 1);
+    assert.equal(saved.state_version, 2);
+    assert.equal(saved.selected_codex_auth_account_id, "slot-a");
     assert.equal(saved.scheduler_stats.a.success_count, 1);
     assert.deepEqual(tempFiles, []);
   } finally {

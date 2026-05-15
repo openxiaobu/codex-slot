@@ -10,7 +10,7 @@ import type {
   UsageRefreshResult
 } from "./types";
 
-const STATE_SCHEMA_VERSION = 1;
+const STATE_SCHEMA_VERSION = 2;
 
 function getStatePath(): string {
   return path.join(getCslotHome(), "state.json");
@@ -29,6 +29,7 @@ function getStatePath(): string {
 function createDefaultState(): CslotState {
   return {
     state_version: STATE_SCHEMA_VERSION,
+    selected_codex_auth_account_id: null,
     account_blocks: {},
     usage_cache: {},
     usage_refresh_errors: {},
@@ -50,6 +51,8 @@ function normalizeState(parsed: Partial<CslotState> | null | undefined): CslotSt
 
   return {
     state_version: STATE_SCHEMA_VERSION,
+    selected_codex_auth_account_id:
+      parsed?.selected_codex_auth_account_id ?? defaults.selected_codex_auth_account_id,
     account_blocks: parsed?.account_blocks ?? defaults.account_blocks,
     usage_cache: parsed?.usage_cache ?? defaults.usage_cache,
     usage_refresh_errors: parsed?.usage_refresh_errors ?? defaults.usage_refresh_errors,
@@ -238,6 +241,34 @@ export function clearUsageRefreshError(accountId: string): void {
 export function getUsageRefreshError(accountId: string): UsageRefreshError | null {
   const state = loadState();
   return state.usage_refresh_errors[accountId] ?? null;
+}
+
+/**
+ * 读取用户在状态面板中手动选择的 Codex App 主登录态账号。
+ *
+ * 业务含义：
+ * 1. 该选择只决定 `cslot start` 复制哪个受管账号到主 `~/.codex/auth.json`。
+ * 2. 它不参与代理请求调度，也不改变账号 enabled 状态。
+ *
+ * @returns 手动选择的账号 id；未选择时返回 `null`。
+ * @throws 当 state 文件读取或解析失败时透传底层异常。
+ */
+export function getSelectedCodexAuthAccountId(): string | null {
+  const state = loadState();
+  return state.selected_codex_auth_account_id ?? null;
+}
+
+/**
+ * 保存用户在状态面板中手动选择的 Codex App 主登录态账号。
+ *
+ * @param accountId 账号 id；传入 `null` 表示清除手动选择并恢复默认回退规则。
+ * @returns 无返回值。
+ * @throws 当 state 文件写入失败时透传底层异常。
+ */
+export function setSelectedCodexAuthAccountId(accountId: string | null): void {
+  updateState((state) => {
+    state.selected_codex_auth_account_id = accountId;
+  });
 }
 
 /**

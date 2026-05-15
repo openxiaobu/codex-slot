@@ -5,11 +5,11 @@ import { spawn } from "node:child_process";
 import { request } from "undici";
 import { listAccounts } from "./account-service";
 import { hasCompleteCodexAuthState } from "../account-store";
+import { getSelectedCodexAuthAccountId } from "../state";
 import { applyManagedCodexConfig, deactivateManagedCodexConfig } from "../codex-config";
 import { applyManagedCodexAuth, deactivateManagedCodexAuth } from "../codex-auth";
 import { parsePort } from "../cli-helpers";
 import { getPidPath, getServiceLogPath, loadConfig, saveConfig } from "../config";
-import { pickBestAccount } from "../scheduler";
 import type { ManagedAccount } from "../types";
 
 const STARTUP_POLL_INTERVAL_MS = 100;
@@ -195,21 +195,33 @@ function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<type
  * 选择一个可用于接管主 `~/.codex` 登录态的账号。
  *
  * 业务规则：
- * 1. 优先复用当前调度器已经选中的最佳账号，保证 CLI 与代理请求走同一身份。
- * 2. 若当前没有可调度账号，则回退到首个启用且本地工作空间仍存在的账号。
- * 3. 若仍无可用账号，则返回 `null`，此时仅接管 provider 配置，不强行覆盖主登录态。
+ * 1. 优先使用状态面板中手动选择的 Codex App 登录态账号。
+ * 2. 手动选择存在但账号缺失或登录态不完整时直接报错，避免静默切到其他账号。
+ * 3. 未手动选择时，回退到首个启用且本地工作空间仍存在的账号。
+ * 4. 若仍无可用账号，则返回 `null`，此时仅接管 provider 配置，不强行覆盖主登录态。
  *
  * @returns 选中的受管账号；若不存在可接管账号则返回 `null`。
- * @throws 无显式抛出。
+ * @throws 当手动选择的账号不存在或登录态不完整时抛出错误。
  */
 function resolveManagedAuthAccount(): ManagedAccount | null {
-  const selected = pickBestAccount()?.account;
-  if (selected && hasCompleteCodexAuthState(selected.codex_home)) {
+  const accounts = listAccounts();
+  const selectedAuthAccountId = getSelectedCodexAuthAccountId();
+
+  if (selectedAuthAccountId) {
+    const selected = accounts.find((account) => account.id === selectedAuthAccountId);
+    if (!selected) {
+      throw new Error(`手动选择的 Codex App 登录态账号不存在: ${selectedAuthAccountId}`);
+    }
+
+    if (!fs.existsSync(selected.codex_home) || !hasCompleteCodexAuthState(selected.codex_home)) {
+      throw new Error(`手动选择的 Codex App 登录态账号缺少完整 auth.json: ${selectedAuthAccountId}`);
+    }
+
     return selected;
   }
 
   return (
-    listAccounts().find(
+    accounts.find(
       (account) =>
         account.enabled &&
         fs.existsSync(account.codex_home) &&
