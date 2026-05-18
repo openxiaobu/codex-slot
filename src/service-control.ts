@@ -2,6 +2,17 @@ import { startManagedService, stopManagedService } from "./app/service-lifecycle
 import { loadConfig } from "./config";
 import { bi } from "./text";
 
+function describeServiceManager(manager: "launchd" | "systemd-user" | "detached"): string {
+  switch (manager) {
+    case "launchd":
+      return bi("launchd（开机自启 + 异常自动拉起）", "launchd (auto-start on boot + auto-restart on failure)");
+    case "systemd-user":
+      return bi("systemd --user（开机自启 + 异常自动拉起）", "systemd --user (auto-start on boot + auto-restart on failure)");
+    default:
+      return bi("detached 进程（仅本次后台运行，不保证自动拉起）", "detached process (background only, no guaranteed auto-restart)");
+  }
+}
+
 /**
  * 后台启动 cslot 服务并写入 PID 文件。
  *
@@ -15,6 +26,7 @@ export async function handleStart(portOverride?: string): Promise<void> {
 
   if (result.alreadyRunning) {
     console.log(bi(`服务已在运行，PID=${result.pid}`, `Service is already running. PID=${result.pid}`));
+    console.log(`托管 / Manager: ${describeServiceManager(result.manager)}`);
     if (portOverride) {
       console.log(bi(`已将新端口写入配置: ${result.port}`, `The new port has been saved to config: ${result.port}`));
       console.log(
@@ -37,6 +49,7 @@ export async function handleStart(portOverride?: string): Promise<void> {
   }
 
   console.log(bi(`服务已启动: http://${config.server.host}:${result.port}`, `Service started: http://${config.server.host}:${result.port}`));
+  console.log(`托管 / Manager: ${describeServiceManager(result.manager)}`);
   console.log(`PID: ${result.pid}`);
   console.log(bi(`日志: ${result.logPath}`, `Log: ${result.logPath}`));
 }

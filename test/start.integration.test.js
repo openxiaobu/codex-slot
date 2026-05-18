@@ -107,6 +107,26 @@ function readCodexConfig(homeDir) {
 }
 
 /**
+ * 读取隔离 HOME 下生成的 launchd plist 文件列表，供 macOS 常驻托管断言复用。
+ *
+ * @param homeDir 测试专用 HOME 目录。
+ * @returns 当前 HOME 下 LaunchAgents 目录里的 plist 绝对路径列表。
+ * @throws 无显式抛出。
+ */
+function listLaunchAgentPlists(homeDir) {
+  const launchAgentsDir = path.join(homeDir, "Library", "LaunchAgents");
+
+  if (!fs.existsSync(launchAgentsDir)) {
+    return [];
+  }
+
+  return fs
+    .readdirSync(launchAgentsDir)
+    .filter((fileName) => fileName.endsWith(".plist"))
+    .map((fileName) => path.join(launchAgentsDir, fileName));
+}
+
+/**
  * 启动一个临时 HTTP 服务占用指定端口，模拟默认端口冲突。
  *
  * @param port 需要占用的端口。
@@ -372,8 +392,21 @@ test("默认启动会把实际端口同步到单一 provider 配置", async () =
     assert.doesNotMatch(codexConfig, /experimental_bearer_token/);
     assert.doesNotMatch(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
     assert.doesNotMatch(codexConfig, /Authorization = "Bearer/);
+
+    if (process.platform === "darwin" && process.env.CSLOT_DISABLE_LAUNCHD !== "1") {
+      const plistPaths = listLaunchAgentPlists(homeDir);
+      assert.equal(plistPaths.length, 1);
+      const plist = fs.readFileSync(plistPaths[0], "utf8");
+      assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
+      assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
+    }
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
+
+    if (process.platform === "darwin" && process.env.CSLOT_DISABLE_LAUNCHD !== "1") {
+      assert.equal(listLaunchAgentPlists(homeDir).length, 0);
+    }
+
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
@@ -505,6 +538,57 @@ test("代理转发 200 后服务仍保持存活", async () => {
 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true });
+
+    await waitForHealth(proxyPort);
+  } finally {
+    await runCli(homeDir, ["stop"]).catch(() => {});
+    await closeServer(upstreamServer);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("上游流式响应中途断开后服务仍保持存活", async () => {
+  const homeDir = createIsolatedHome();
+  const { server: upstreamServer, port: upstreamPort } = await startUpstreamServer((req, res) => {
+    if (req.url !== "/backend-api/codex/responses") {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache"
+    });
+    res.write("data: partial\n\n");
+
+    setTimeout(() => {
+      res.destroy(new Error("upstream stream aborted"));
+    }, 20);
+  });
+
+  try {
+    prepareManagedProxyFixture(homeDir, upstreamPort);
+
+    const { stdout } = await runCli(homeDir, ["start"]);
+    const portMatch = stdout.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+    assert.ok(portMatch);
+    const proxyPort = Number(portMatch[1]);
+
+    await waitForHealth(proxyPort);
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ model: "test-model", input: "hello" })
+    });
+
+    assert.equal(response.status, 200);
+    await assert.rejects(async () => {
+      await response.text();
+    });
 
     await waitForHealth(proxyPort);
   } finally {

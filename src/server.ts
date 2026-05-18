@@ -9,6 +9,9 @@ import { refreshAccountUsage } from "./usage-sync";
 
 interface ProxyReply {
   raw: NodeJS.WritableStream & {
+    destroyed?: boolean;
+    destroy?: (error?: Error) => void;
+    write: (chunk: unknown) => boolean;
     writeHead: (statusCode: number, headers?: Record<string, string | string[] | number>) => void;
     end: (chunk?: unknown) => void;
   };
@@ -37,6 +40,45 @@ async function readRawRequestBody(stream: NodeJS.ReadableStream): Promise<Buffer
   }
 
   return Buffer.concat(chunks);
+}
+
+/**
+ * 将上游响应体安全地透传给已 hijack 的本地响应。
+ *
+ * 业务含义：
+ * 1. 一旦开始写出上游 header，就不能再把异常抛回 Fastify 默认错误处理器。
+ * 2. 上游流中途断开或客户端提前关闭时，只终止当前连接，避免整个 cslot 进程崩溃。
+ *
+ * @param reply 当前请求对应的 Fastify reply。
+ * @param result 已成功拿到响应头的上游代理结果。
+ * @returns Promise，流复制结束或被安全终止后返回。
+ * @throws 无显式抛出；异常会被当前方法内部吞掉并转成连接销毁。
+ */
+async function streamProxyResponse(
+  reply: ProxyReply,
+  result: {
+    statusCode: number;
+    headers: Record<string, string>;
+    body: AsyncIterable<Buffer | Uint8Array | string>;
+  }
+): Promise<void> {
+  reply.hijack();
+  reply.raw.writeHead(result.statusCode, result.headers);
+
+  try {
+    for await (const chunk of result.body) {
+      reply.raw.write(chunk);
+    }
+
+    reply.raw.end();
+  } catch (error) {
+    console.error("cslot proxy stream aborted", error);
+
+    // 响应已开始输出，此时只能销毁当前连接，不能再交给 Fastify 二次写 header。
+    if (!reply.raw.destroyed) {
+      reply.raw.destroy?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
 }
 
 /**
@@ -91,14 +133,7 @@ export async function startServer(port: number): Promise<void> {
       return;
     }
 
-    reply.hijack();
-    reply.raw.writeHead(result.statusCode, result.headers);
-
-    for await (const chunk of result.body) {
-      reply.raw.write(chunk);
-    }
-
-    reply.raw.end();
+    await streamProxyResponse(reply, result);
   };
 
   const backendProxyHandler = async (
@@ -127,14 +162,7 @@ export async function startServer(port: number): Promise<void> {
       return;
     }
 
-    reply.hijack();
-    reply.raw.writeHead(result.statusCode, result.headers);
-
-    for await (const chunk of result.body) {
-      reply.raw.write(chunk);
-    }
-
-    reply.raw.end();
+    await streamProxyResponse(reply, result);
   };
 
   await app.register(async (proxyApp) => {
