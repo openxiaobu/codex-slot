@@ -72,7 +72,7 @@ function createBaseDependencies(overrides = {}) {
         account_id: "account-id"
       }
     }),
-    sendCodexResponsesRequest: async () => createResponse(200, "ok"),
+    sendCodexRequest: async () => createResponse(200, "ok"),
     refreshAccountTokens: async () => ({
       auth_mode: "chatgpt",
       tokens: {
@@ -92,7 +92,7 @@ test("proxy retry service 在 401 后刷新 token 并重试成功", async () => 
   const recorded = [];
   const service = createProxyRetryService(
     createBaseDependencies({
-      sendCodexResponsesRequest: async (options) => {
+      sendCodexRequest: async (options) => {
         sentTokens.push(options.accessToken);
         return sentTokens.length === 1
           ? createResponse(401, "expired")
@@ -121,4 +121,33 @@ test("proxy retry service 在没有候选账号时返回明确错误", async () 
   assert.equal(result.type, "send");
   assert.equal(result.statusCode, 503);
   assert.equal(result.payload.error.type, "no_available_account");
+});
+
+test("proxy retry service 支持转发通用 /v1/models 路径", async () => {
+  const seen = [];
+  const service = createProxyRetryService(
+    createBaseDependencies({
+      sendCodexRequest: async (options) => {
+        seen.push({
+          method: options.method,
+          pathWithQuery: options.pathWithQuery
+        });
+        return createResponse(200, '{"models":[]}', { "content-type": "application/json" });
+      }
+    })
+  );
+
+  const result = await service.proxyCodexWithRetry({
+    method: "GET",
+    url: "/v1/models?client_version=0.130.0",
+    headers: {}
+  });
+
+  assert.equal(result.type, "proxy");
+  assert.deepEqual(seen, [
+    {
+      method: "GET",
+      pathWithQuery: "/models?client_version=0.130.0"
+    }
+  ]);
 });

@@ -5,7 +5,7 @@ import { listCandidateAccounts } from "./scheduler";
 import { recordAccountScheduleSuccess } from "./state-repository";
 import { setAccountBlock } from "./state";
 import { bi } from "./text";
-import { sendCodexResponsesRequest } from "./upstream-client";
+import { sendCodexRequest } from "./upstream-client";
 import {
   buildNetworkUnavailablePayload,
   isNetworkUnavailableError,
@@ -23,11 +23,18 @@ interface UpstreamProxyResponse {
   };
 }
 
+interface CodexProxyRequest {
+  method: string;
+  url: string;
+  headers: IncomingHttpHeaders;
+  body?: Buffer;
+}
+
 interface ProxyRetryDependencies {
   loadConfig: () => CslotConfig;
   listCandidateAccounts: () => SchedulerPick[];
   readAuthFile: (codexHome: string) => CodexAuthFile | null;
-  sendCodexResponsesRequest: typeof sendCodexResponsesRequest;
+  sendCodexRequest: typeof sendCodexRequest;
   refreshAccountTokens: typeof refreshAccountTokens;
   setAccountBlock: typeof setAccountBlock;
   recordAccountScheduleSuccess: typeof recordAccountScheduleSuccess;
@@ -50,6 +57,7 @@ export type ProxyRetryResult =
 /**
  * 为当前请求失败的账号设置临时熔断状态，避免短时间内被重复选中。
  *
+ * @param dependencies 代理服务依赖集合。
  * @param accountId 账号标识。
  * @param reason 本地状态中记录的失败原因。
  * @param blockSeconds 熔断持续秒数。
@@ -111,12 +119,54 @@ function buildSendResult(
 }
 
 /**
- * 对单个候选账号发送上游请求。
+ * 解析本地 Codex-compatible 代理请求，并转换成上游 codex path。
  *
+ * 业务含义：
+ * 1. 对外暴露的 `/v1/*` 请求需要统一映射到上游 `codex_base_url` 的同名子路径，避免继续按接口逐个补洞。
+ * 2. 为兼容历史入口，也保留 `/backend-api/codex/*` 映射到同一上游 path 的能力。
+ *
+ * @param request 原始本地代理请求。
+ * @returns 可发往上游的 codex path；不属于代理范围时返回错误结果。
+ * @throws 当 URL 解析失败时返回错误结果，不向上游发请求。
+ */
+function resolveCodexPath(request: CodexProxyRequest): {
+  pathWithQuery?: string;
+  error?: ProxyRetryResult;
+} {
+  const parsedUrl = new URL(request.url, "http://127.0.0.1");
+  const openAiPrefix = "/v1";
+  const legacyBackendPrefix = "/backend-api/codex";
+
+  if (parsedUrl.pathname.startsWith(`${openAiPrefix}/`)) {
+    return {
+      pathWithQuery: `${parsedUrl.pathname.slice(openAiPrefix.length)}${parsedUrl.search}`
+    };
+  }
+
+  if (parsedUrl.pathname.startsWith(`${legacyBackendPrefix}/`)) {
+    return {
+      pathWithQuery: `${parsedUrl.pathname.slice(legacyBackendPrefix.length)}${parsedUrl.search}`
+    };
+  }
+
+  return {
+    error: buildSendResult(404, {
+      error: {
+        message: bi("不支持的 Codex 代理路径", "Unsupported Codex proxy path"),
+        type: "unsupported_codex_proxy_path"
+      }
+    })
+  };
+}
+
+/**
+ * 对单个候选账号发送通用的 codex 上游请求。
+ *
+ * @param dependencies 代理服务依赖集合。
  * @param picked 当前候选账号。
  * @param accessToken 可用 access token。
- * @param requestHeaders 原始请求头。
- * @param requestBody 原始请求体。
+ * @param pathWithQuery 已解析的 codex path 与 query。
+ * @param request 原始本地代理请求。
  * @returns 上游响应。
  * @throws 当网络层或 undici 请求失败时透传底层异常。
  */
@@ -124,18 +174,20 @@ async function sendWithAccount(
   dependencies: ProxyRetryDependencies,
   picked: SchedulerPick,
   accessToken: string,
-  requestHeaders: IncomingHttpHeaders,
-  requestBody: Buffer
+  pathWithQuery: string,
+  request: CodexProxyRequest
 ): Promise<UpstreamProxyResponse> {
   const config = dependencies.loadConfig();
   const auth = dependencies.readAuthFile(picked.account.codex_home);
 
-  return await dependencies.sendCodexResponsesRequest({
+  return await dependencies.sendCodexRequest({
     codexBaseUrl: config.upstream.codex_base_url,
-    requestHeaders,
+    method: request.method.toUpperCase(),
+    pathWithQuery,
+    requestHeaders: request.headers,
     accessToken,
     accountIdHeader: auth?.tokens?.account_id,
-    body: requestBody
+    body: request.body
   });
 }
 
@@ -144,13 +196,14 @@ async function sendWithAccount(
  *
  * 业务含义：
  * 1. 默认依赖绑定真实配置、账号、状态和上游请求。
- * 2. 测试或未来扩展可注入替代依赖，避免业务重试逻辑硬绑 I/O 实现。
+ * 2. `/v1/*` 与历史 `/backend-api/codex/*` 都复用同一套账号调度、401 刷新与异常兜底语义。
  *
  * @param overrides 可选依赖覆盖项。
  * @returns 代理重试服务实例。
  * @throws 无显式抛出。
  */
 export function createProxyRetryService(overrides?: Partial<ProxyRetryDependencies>): {
+  proxyCodexWithRetry: (request: CodexProxyRequest) => Promise<ProxyRetryResult>;
   proxyResponsesWithRetry: (
     requestHeaders: IncomingHttpHeaders,
     requestBody: Buffer
@@ -160,18 +213,20 @@ export function createProxyRetryService(overrides?: Partial<ProxyRetryDependenci
     loadConfig,
     listCandidateAccounts,
     readAuthFile,
-    sendCodexResponsesRequest,
+    sendCodexRequest,
     refreshAccountTokens,
     setAccountBlock,
     recordAccountScheduleSuccess,
     ...overrides
   };
 
-  return {
-    async proxyResponsesWithRetry(
-      requestHeaders: IncomingHttpHeaders,
-      requestBody: Buffer
-    ): Promise<ProxyRetryResult> {
+  const proxyCodexWithRetry = async (request: CodexProxyRequest): Promise<ProxyRetryResult> => {
+      const route = resolveCodexPath(request);
+
+      if (route.error) {
+        return route.error;
+      }
+
       const candidates = dependencies.listCandidateAccounts();
 
       if (candidates.length === 0) {
@@ -210,7 +265,7 @@ export function createProxyRetryService(overrides?: Partial<ProxyRetryDependenci
         let upstream;
 
         try {
-          upstream = await sendWithAccount(dependencies, picked, accessToken, requestHeaders, requestBody);
+          upstream = await sendWithAccount(dependencies, picked, accessToken, route.pathWithQuery!, request);
         } catch (error) {
           lastStatusCode = 503;
           if (isNetworkUnavailableError(error)) {
@@ -232,7 +287,7 @@ export function createProxyRetryService(overrides?: Partial<ProxyRetryDependenci
           try {
             const refreshed = await dependencies.refreshAccountTokens(picked.account.id);
             accessToken = refreshed.tokens?.access_token ?? accessToken;
-            upstream = await sendWithAccount(dependencies, picked, accessToken, requestHeaders, requestBody);
+            upstream = await sendWithAccount(dependencies, picked, accessToken, route.pathWithQuery!, request);
           } catch (error) {
             lastStatusCode = 503;
             if (isNetworkUnavailableError(error)) {
@@ -315,8 +370,23 @@ export function createProxyRetryService(overrides?: Partial<ProxyRetryDependenci
       }
 
       return buildSendResult(lastStatusCode, lastErrorPayload);
-    }
+  };
+
+  const proxyResponsesWithRetry = async (
+    requestHeaders: IncomingHttpHeaders,
+    requestBody: Buffer
+  ): Promise<ProxyRetryResult> =>
+    await proxyCodexWithRetry({
+      method: "POST",
+      url: "/v1/responses",
+      headers: requestHeaders,
+      body: requestBody
+    });
+
+  return {
+    proxyCodexWithRetry,
+    proxyResponsesWithRetry
   };
 }
 
-export const { proxyResponsesWithRetry } = createProxyRetryService();
+export const { proxyCodexWithRetry, proxyResponsesWithRetry } = createProxyRetryService();

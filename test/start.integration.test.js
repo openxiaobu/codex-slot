@@ -547,6 +547,55 @@ test("代理转发 200 后服务仍保持存活", async () => {
   }
 });
 
+test("代理转发 GET /v1/models 到上游 codex models", async () => {
+  const homeDir = createIsolatedHome();
+  const seen = [];
+  const { server: upstreamServer, port: upstreamPort } = await startUpstreamServer((req, res) => {
+    seen.push({
+      method: req.method,
+      url: req.url,
+      authorization: req.headers.authorization,
+      accountId: req.headers["chatgpt-account-id"]
+    });
+
+    if (req.url !== "/backend-api/codex/models?client_version=0.130.0") {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ models: [{ slug: "gpt-5.4" }] }));
+  });
+
+  try {
+    prepareManagedProxyFixture(homeDir, upstreamPort);
+
+    const { stdout } = await runCli(homeDir, ["start"]);
+    const portMatch = stdout.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+    assert.ok(portMatch);
+    const proxyPort = Number(portMatch[1]);
+
+    await waitForHealth(proxyPort);
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/models?client_version=0.130.0`);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { models: [{ slug: "gpt-5.4" }] });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].method, "GET");
+    assert.equal(seen[0].authorization, "Bearer test-access-token");
+    assert.equal(seen[0].accountId, "test-account-id");
+
+    await waitForHealth(proxyPort);
+  } finally {
+    await runCli(homeDir, ["stop"]).catch(() => {});
+    await closeServer(upstreamServer);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("上游流式响应中途断开后服务仍保持存活", async () => {
   const homeDir = createIsolatedHome();
   const { server: upstreamServer, port: upstreamPort } = await startUpstreamServer((req, res) => {

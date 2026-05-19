@@ -18,7 +18,7 @@ import { request } from "undici";
 export function buildUpstreamHeaders(
   requestHeaders: IncomingHttpHeaders,
   accessToken: string,
-  bodyLength: number,
+  bodyLength?: number,
   accountIdHeader?: string
 ): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -47,7 +47,10 @@ export function buildUpstreamHeaders(
     headers.accept = "text/event-stream, application/json";
   }
 
-  headers["content-length"] = String(bodyLength);
+  if (typeof bodyLength === "number") {
+    headers["content-length"] = String(bodyLength);
+  }
+
   headers["user-agent"] = "codex-slot/0.1.1";
 
   if (accountIdHeader) {
@@ -55,6 +58,44 @@ export function buildUpstreamHeaders(
   }
 
   return headers;
+}
+
+/**
+ * 向 Codex-compatible 上游发送一次通用请求。
+ *
+ * 业务含义：
+ * 1. 本地 `/v1/*` 或旧 `/backend-api/codex/*` 路由都应复用同一条上游转发逻辑，避免再按接口逐个补洞。
+ * 2. 路由后缀与 query 原样拼接到 `codexBaseUrl` 后，仅由 cslot 负责替换官方 access token 与账号头。
+ *
+ * @param options 上游请求参数，包含方法、目标 path/query、原始请求头以及可选 body。
+ * @returns undici 上游响应对象。
+ * @throws 当网络层或 undici 请求失败时透传底层异常。
+ */
+export async function sendCodexRequest(options: {
+  codexBaseUrl: string;
+  method: string;
+  pathWithQuery: string;
+  requestHeaders: IncomingHttpHeaders;
+  accessToken: string;
+  accountIdHeader?: string;
+  body?: Buffer;
+}) {
+  const baseUrl = options.codexBaseUrl.replace(/\/+$/, "");
+  const pathWithQuery = options.pathWithQuery.startsWith("/")
+    ? options.pathWithQuery
+    : `/${options.pathWithQuery}`;
+  const bodyLength = options.body && options.body.length > 0 ? options.body.length : undefined;
+
+  return await request(`${baseUrl}${pathWithQuery}`, {
+    method: options.method,
+    headers: buildUpstreamHeaders(
+      options.requestHeaders,
+      options.accessToken,
+      bodyLength,
+      options.accountIdHeader
+    ),
+    body: options.body && options.body.length > 0 ? options.body : undefined
+  });
 }
 
 /**
@@ -75,14 +116,13 @@ export async function sendCodexResponsesRequest(options: {
   accountIdHeader?: string;
   body: Buffer;
 }) {
-  return await request(`${options.codexBaseUrl}/responses`, {
+  return await sendCodexRequest({
+    codexBaseUrl: options.codexBaseUrl,
     method: "POST",
-    headers: buildUpstreamHeaders(
-      options.requestHeaders,
-      options.accessToken,
-      options.body.length,
-      options.accountIdHeader
-    ),
+    pathWithQuery: "/responses",
+    requestHeaders: options.requestHeaders,
+    accessToken: options.accessToken,
+    accountIdHeader: options.accountIdHeader,
     body: options.body
   });
 }

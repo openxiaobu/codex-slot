@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import type { IncomingHttpHeaders } from "node:http";
 import { loadConfig } from "./config";
 import { proxyChatGptBackendWithRetry } from "./backend-proxy-service";
-import { proxyResponsesWithRetry } from "./proxy-retry-service";
+import { proxyCodexWithRetry } from "./proxy-retry-service";
 import { collectAccountStatuses } from "./status";
 import { pickBestAccount } from "./scheduler";
 import { refreshAccountUsage } from "./usage-sync";
@@ -27,12 +27,16 @@ interface ProxyReply {
 /**
  * 读取代理请求的原始 body 字节，供多账号重试时重复发送同一份载荷。
  *
- * @param stream 客户端发到代理路由的原始可读流。
+ * @param stream 客户端发到代理路由的原始可读流；无 body 时允许为空。
  * @returns 完整请求体的 Buffer；空请求体时返回空 Buffer。
  * @throws 当读取流失败时抛出底层 I/O 错误。
  */
-async function readRawRequestBody(stream: NodeJS.ReadableStream): Promise<Buffer> {
+async function readRawRequestBody(stream?: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
+
+  if (!stream) {
+    return Buffer.alloc(0);
+  }
 
   for await (const chunk of stream) {
     // 统一转成 Buffer，避免不同 chunk 类型在后续重发时出现编码歧义。
@@ -116,13 +120,22 @@ export async function startServer(port: number): Promise<void> {
     };
   });
 
-  const proxyHandler = async (
-    requestBodyStream: NodeJS.ReadableStream,
-    requestHeaders: IncomingHttpHeaders,
+  const codexProxyHandler = async (
+    request: {
+      method: string;
+      url: string;
+      headers: IncomingHttpHeaders;
+      body?: NodeJS.ReadableStream;
+    },
     reply: ProxyReply
   ) => {
-    const requestBody = await readRawRequestBody(requestBodyStream);
-    const result = await proxyResponsesWithRetry(requestHeaders, requestBody);
+    const requestBody = await readRawRequestBody(request.body);
+    const result = await proxyCodexWithRetry({
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body: requestBody
+    });
 
     if (result.type === "send") {
       reply.code(result.statusCode);
@@ -172,12 +185,42 @@ export async function startServer(port: number): Promise<void> {
       done(null, payload);
     });
 
-    proxyApp.post("/v1/responses", { bodyLimit: Number.MAX_SAFE_INTEGER }, async (request, reply) => {
-      await proxyHandler(request.body as NodeJS.ReadableStream, request.headers, reply);
+    proxyApp.route({
+      method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+      url: "/v1/*",
+      bodyLimit: Number.MAX_SAFE_INTEGER,
+      handler: async (request, reply) => {
+        const body = request.body as NodeJS.ReadableStream | undefined;
+
+        await codexProxyHandler(
+          {
+            method: request.method,
+            url: request.url,
+            headers: request.headers,
+            body
+          },
+          reply
+        );
+      }
     });
 
-    proxyApp.post("/backend-api/codex/responses", { bodyLimit: Number.MAX_SAFE_INTEGER }, async (request, reply) => {
-      await proxyHandler(request.body as NodeJS.ReadableStream, request.headers, reply);
+    proxyApp.route({
+      method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+      url: "/backend-api/codex/*",
+      bodyLimit: Number.MAX_SAFE_INTEGER,
+      handler: async (request, reply) => {
+        const body = request.body as NodeJS.ReadableStream | undefined;
+
+        await codexProxyHandler(
+          {
+            method: request.method,
+            url: request.url,
+            headers: request.headers,
+            body
+          },
+          reply
+        );
+      }
     });
 
     proxyApp.route({
