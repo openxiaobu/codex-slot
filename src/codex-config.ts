@@ -391,66 +391,6 @@ function findTableHeaderOffset(content: string, header: string): number | null {
 }
 
 /**
- * 查找指定偏移之前最近的表头，供恢复原有表块位置时作为后备锚点。
- *
- * @param content 当前 `config.toml` 内容。
- * @param offset 截止偏移。
- * @returns 最近的表头文本；未命中返回 `null`。
- */
-function findPreviousTableHeaderBeforeOffset(content: string, offset: number): string | null {
-  const lines = content.split(/\r?\n/);
-  let currentOffset = 0;
-  let previousHeader: string | null = null;
-
-  for (const line of lines) {
-    const lineEnd = currentOffset + line.length;
-    const trimmed = line.trim();
-
-    if (currentOffset >= offset) {
-      break;
-    }
-
-    if (trimmed.startsWith("[") && !trimmed.startsWith("[[") && !trimmed.startsWith("#")) {
-      previousHeader = trimmed;
-    }
-
-    currentOffset = lineEnd + (content.slice(lineEnd, lineEnd + 2) === "\r\n" ? 2 : 1);
-  }
-
-  return previousHeader;
-}
-
-/**
- * 查找指定偏移之后的首个表头，供恢复原有表块位置时作为优先锚点。
- *
- * @param content 当前 `config.toml` 内容。
- * @param offset 起始偏移。
- * @returns 首个后续表头文本；未命中返回 `null`。
- */
-function findNextTableHeaderAfterOffset(content: string, offset: number): string | null {
-  const lines = content.split(/\r?\n/);
-  let currentOffset = 0;
-
-  for (const line of lines) {
-    const lineEnd = currentOffset + line.length;
-    const trimmed = line.trim();
-
-    if (
-      currentOffset >= offset &&
-      trimmed.startsWith("[") &&
-      !trimmed.startsWith("[[") &&
-      !trimmed.startsWith("#")
-    ) {
-      return trimmed;
-    }
-
-    currentOffset = lineEnd + (content.slice(lineEnd, lineEnd + 2) === "\r\n" ? 2 : 1);
-  }
-
-  return null;
-}
-
-/**
  * 清理文本中的所有 `model_provider` 配置块，确保每次接管都以单一稳定块重新写入。
  *
  * @param content 当前 `config.toml` 内容。
@@ -506,6 +446,40 @@ function stripAllManagedBlocks(content: string): string {
     MODEL_PROVIDER_START_MARKER,
     MODEL_PROVIDER_END_MARKER
   );
+}
+
+/**
+ * 清理文本中的所有 `model_provider = "cslot"` 根级配置，避免 stop 后残留 cslot 入口。
+ *
+ * @param content 当前 `config.toml` 内容。
+ * @returns 移除后的文本内容。
+ */
+function removeAllCslotModelProviderLines(content: string): string {
+  let nextContent = content;
+
+  while (true) {
+    const range = findModelProviderLine(nextContent);
+    if (!range) {
+      return nextContent;
+    }
+
+    if (range.value.includes('model_provider = "cslot"')) {
+      nextContent = nextContent.slice(0, range.start) + nextContent.slice(range.end);
+      continue;
+    }
+
+    return nextContent;
+  }
+}
+
+/**
+ * 在 stop 阶段只做去 cslot 化，移除所有受管块与残留的 cslot provider 配置。
+ *
+ * @param content 当前 `config.toml` 内容。
+ * @returns 已去除 cslot 接管痕迹的文本。
+ */
+function removeAllCslotManagedConfig(content: string): string {
+  return removeAllProviderSections(removeAllCslotModelProviderLines(stripAllManagedBlocks(content)));
 }
 
 /**
@@ -605,119 +579,6 @@ function appendBlockToEnd(content: string, block: string, eol: string): string {
 }
 
 /**
- * 将表块尽量插回原有相邻表头附近；若锚点已不存在，则退回文件尾部追加。
- *
- * @param content 当前 `config.toml` 内容。
- * @param block 待插入的表块。
- * @param eol 目标换行符。
- * @param preferredNextTableHeader 原始后续表头锚点，命中时优先插到该表之前。
- * @param preferredPreviousTableHeader 原始前驱表头锚点，当前者失效时插到该表之后。
- * @returns 插入后的完整文本。
- */
-function insertTableBlock(
-  content: string,
-  block: string,
-  eol: string,
-  preferredNextTableHeader?: string | null,
-  preferredPreviousTableHeader?: string | null
-): string {
-  if (preferredNextTableHeader) {
-    const nextOffset = findTableHeaderOffset(content, preferredNextTableHeader);
-    if (nextOffset !== null) {
-      return insertBlockBetween(
-        content.slice(0, nextOffset),
-        block,
-        content.slice(nextOffset),
-        eol
-      );
-    }
-  }
-
-  if (preferredPreviousTableHeader) {
-    const previousRange = findTableSectionRange(content, preferredPreviousTableHeader);
-    if (previousRange) {
-      return insertBlockBetween(
-        content.slice(0, previousRange.end),
-        block,
-        content.slice(previousRange.end),
-        eol
-      );
-    }
-  }
-
-  return appendBlockToEnd(content, block, eol);
-}
-
-/**
- * 解析当前目标文件对应的上一轮接管快照。
- *
- * @param targetFile 当前准备接管或恢复的 `config.toml` 路径。
- * @returns 命中同一目标文件时返回上一轮快照；否则返回 `null`。
- */
-function resolveManagedStateForTarget(targetFile: string): ManagedCodexConfigState | null {
-  const managedState = getManagedCodexConfigState();
-
-  if (!managedState || managedState.target_file !== targetFile) {
-    return null;
-  }
-
-  return managedState;
-}
-
-/**
- * 基于当前未受管的配置文本与上一轮快照，生成本轮接管所需的最小恢复快照。
- *
- * 业务规则：
- * 1. 优先记录当前文件里实际存在的原始 `model_provider` 与 `[model_providers.cslot]`。
- * 2. 若当前文件只剩残留受管块，允许继承上一轮快照中的原始片段。
- * 3. 仅保存 cslot 自己声明所有权的两块配置及其锚点，不保存整文件内容。
- *
- * @param targetFile 当前准备接管的 `config.toml` 路径。
- * @param strippedCurrent 已移除受管标记块后的配置文本。
- * @param previousManagedState 同一目标文件的上一轮快照；不存在时传 `null`。
- * @returns 本轮接管后用于 stop 恢复的快照。
- */
-function buildManagedSnapshot(
-  targetFile: string,
-  strippedCurrent: string,
-  previousManagedState: ManagedCodexConfigState | null
-): ManagedCodexConfigState {
-  const originalModelProviderLine = findModelProviderLine(strippedCurrent);
-  const originalProviderSection = findProviderSectionRange(strippedCurrent);
-
-  return {
-    target_file: targetFile,
-    original_model_provider_block:
-      originalModelProviderLine?.value ??
-      previousManagedState?.original_model_provider_block ??
-      null,
-    original_model_provider_next_table_header:
-      (originalModelProviderLine
-        ? findNextTableHeaderAfterOffset(strippedCurrent, originalModelProviderLine.end)
-        : null) ??
-      previousManagedState?.original_model_provider_next_table_header ??
-      null,
-    original_cslot_provider_block:
-      (originalProviderSection ? sanitizeLegacyCslotProviderBlock(originalProviderSection.value) : null) ??
-      (previousManagedState?.original_cslot_provider_block
-        ? sanitizeLegacyCslotProviderBlock(previousManagedState.original_cslot_provider_block)
-        : null),
-    original_cslot_provider_previous_table_header:
-      (originalProviderSection
-        ? findPreviousTableHeaderBeforeOffset(strippedCurrent, originalProviderSection.start)
-        : null) ??
-      previousManagedState?.original_cslot_provider_previous_table_header ??
-      null,
-    original_cslot_provider_next_table_header:
-      (originalProviderSection
-        ? findNextTableHeaderAfterOffset(strippedCurrent, originalProviderSection.end)
-        : null) ??
-      previousManagedState?.original_cslot_provider_next_table_header ??
-      null
-  };
-}
-
-/**
  * 将 cslot 需要的 provider 配置写入指定 `config.toml`，并保存恢复快照。
  *
  * @param targetPathOrDir 可选的 codex 配置目录或 `config.toml` 文件路径。
@@ -732,20 +593,17 @@ export function applyManagedCodexConfig(
   const rawTarget = targetPathOrDir ? expandHome(targetPathOrDir) : getDefaultCodexConfigPath();
   const targetFile = rawTarget.endsWith(".toml") ? rawTarget : path.join(rawTarget, "config.toml");
   const current = fs.existsSync(targetFile) ? fs.readFileSync(targetFile, "utf8") : "";
-  const previousManagedState = resolveManagedStateForTarget(targetFile);
-  const strippedCurrent = stripAllManagedBlocks(current);
-  const eol = detectEol(strippedCurrent);
-  const snapshot = buildManagedSnapshot(targetFile, strippedCurrent, previousManagedState);
+  const cleanedCurrent = removeAllCslotManagedConfig(current);
+  const eol = detectEol(cleanedCurrent);
   const config = options?.config ?? loadConfig();
   const managedModelProviderBlock = buildManagedModelProviderBlock(eol);
   const managedProviderBlock = buildManagedProviderBlock(eol, config);
-  const cleanedBaseContent = removeAllProviderSections(removeAllModelProviderLines(strippedCurrent));
+  const cleanedBaseContent = removeAllProviderSections(removeAllModelProviderLines(cleanedCurrent));
 
   let nextContent = insertRootBlock(
     cleanedBaseContent,
     managedModelProviderBlock,
-    eol,
-    snapshot.original_model_provider_next_table_header
+    eol
   );
   nextContent = appendBlockToEnd(nextContent, managedProviderBlock, eol);
 
@@ -754,7 +612,7 @@ export function applyManagedCodexConfig(
   }
 
   writeFileAtomic(targetFile, nextContent);
-  setManagedCodexConfigState(snapshot);
+  setManagedCodexConfigState({ target_file: targetFile });
 
   if (!options?.silent) {
     console.log(bi(`已写入: ${targetFile}`, `Written to: ${targetFile}`));
@@ -773,40 +631,14 @@ export function applyManagedCodexConfig(
  */
 export function deactivateManagedCodexConfig(): string | null {
   const managedState = getManagedCodexConfigState();
-  if (!managedState) {
-    return null;
-  }
-
-  const targetFile = managedState.target_file;
+  const targetFile = managedState?.target_file ?? getDefaultCodexConfigPath();
   if (!fs.existsSync(targetFile)) {
     clearManagedCodexConfigState();
     return null;
   }
 
   const current = fs.readFileSync(targetFile, "utf8");
-  const eol = detectEol(current);
-  let restored = sanitizeExistingCslotProviderSection(stripAllManagedBlocks(current));
-  const existingModelProviderLine = findModelProviderLine(restored);
-
-  if (!existingModelProviderLine && managedState.original_model_provider_block) {
-    restored = insertRootBlock(
-      restored,
-      managedState.original_model_provider_block,
-      eol,
-      managedState.original_model_provider_next_table_header
-    );
-  }
-
-  const existingProviderSection = findProviderSectionRange(restored);
-  if (!existingProviderSection && managedState.original_cslot_provider_block) {
-    restored = insertTableBlock(
-      restored,
-      managedState.original_cslot_provider_block,
-      eol,
-      managedState.original_cslot_provider_next_table_header,
-      managedState.original_cslot_provider_previous_table_header
-    );
-  }
+  const restored = removeAllCslotManagedConfig(sanitizeExistingCslotProviderSection(current));
 
   writeFileAtomic(targetFile, restored);
   clearManagedCodexConfigState();

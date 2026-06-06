@@ -108,6 +108,7 @@ function registerAccountCommands(program: Command): void {
 function registerRuntimeCommands(program: Command): void {
   program
     .command("status")
+    .alias("usage")
     .description(bi("刷新并查看所有已录入账号或工作空间的最新额度", "Refresh usage for all managed slots"))
     .option("--no-interactive", bi("仅输出状态表，不进入交互式切换", "Print only"))
     .action(async (options: StatusCommandOptions) => {

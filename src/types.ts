@@ -153,11 +153,6 @@ export interface AccountSchedulerStats {
 
 export interface ManagedCodexConfigState {
   target_file: string;
-  original_model_provider_block: string | null;
-  original_model_provider_next_table_header?: string | null;
-  original_cslot_provider_block: string | null;
-  original_cslot_provider_previous_table_header?: string | null;
-  original_cslot_provider_next_table_header?: string | null;
 }
 
 export interface ManagedCodexAuthState {
