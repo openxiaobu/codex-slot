@@ -24,37 +24,22 @@ import { handleStatus, type StatusCommandOptions } from "./status-command";
 import { bi } from "./text";
 
 /**
- * 生成根 help 中的 relay 与模型出口命令说明。
+ * 生成根 help 中 relay 与模型出口相关的示例命令。
  *
  * 业务含义：
- * 1. Commander 默认命令列表会按终端宽度折行，中英混排时可读性较差。
- * 2. 最近新增的 relay/use/current 命令需要用固定双语格式补充业务含义和使用方式。
+ * 1. 根 help 的主命令列表保持 Commander 默认风格。
+ * 2. relay/use/current 的常见用法只补充到示例区，避免额外文档块打断整体格式。
  *
  * @returns 可追加到根 help 的多行说明。
  * @throws 无显式抛出。
  */
-function renderRelayCommandHelp(): string[] {
+function renderRelayCommandExamples(): string[] {
   return [
-    "",
-    "中转命令 / Relay commands:",
-    "  cslot relay add <name> --base-url <url> --api-key <key>",
-    "    中文: 新增 OpenAI-compatible 中转槽位。",
-    "    English: Add an OpenAI-compatible relay slot.",
+    "  cslot relay add third --base-url https://relay.example.com/v1 --api-key <key>",
     "  cslot relay list",
-    "    中文: 查看全部中转槽位，API key 会脱敏。",
-    "    English: List relay slots with API keys masked.",
-    "  cslot relay enable <name> / cslot relay disable <name>",
-    "    中文: 控制某个中转槽位是否参与模型出口选择。",
-    "    English: Enable or disable a relay slot for model routing.",
-    "  cslot use relay <name>",
-    "    中文: 固定模型请求走指定中转槽位。",
-    "    English: Route model requests through the selected relay slot.",
+    "  cslot use relay third",
     "  cslot use auth",
-    "    中文: 恢复使用官方 Codex 账号池。",
-    "    English: Restore routing through the official Codex auth pool.",
-    "  cslot current",
-    "    中文: 查看当前模型出口和 Codex App 登录态选择。",
-    "    English: Show the active model route and Codex App auth selection."
+    "  cslot current"
   ];
 }
 
@@ -81,7 +66,7 @@ function configureRootProgram(program: Command): void {
       "  cslot rename work work-main",
       "  cslot start --port 4399",
       "  cslot status --no-interactive",
-      ...renderRelayCommandHelp(),
+      ...renderRelayCommandExamples(),
       "",
       `${bi("说明", "Notes")}:`,
       `  ${bi(
