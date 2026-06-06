@@ -12,6 +12,7 @@
 - 将多个账号或工作空间作为独立槽位管理
 - 在需要时手动刷新 usage 缓存用于状态展示
 - 通过本地 provider 给 `Codex` 使用
+- 可手动将模型请求固定到 OpenAI-compatible 中转槽位
 - 将 Codex 插件运行时的 ChatGPT backend 请求代理到当前 cslot 账号
 - 对临时限流、5 小时限制、周限制做本地熔断
 
@@ -83,12 +84,21 @@ codex-slot import <name> [HOME]
 codex-slot status
 codex-slot start [--port <port>]
 codex-slot stop
+codex-slot relay add <name> --base-url <url> --api-key <key>
+codex-slot relay list
+codex-slot use relay <name>
+codex-slot use auth
+codex-slot current
 ```
 
 常见用法：
 
 - `cslot import work ~/workspace-home`
 - `cslot rename work work-main`
+- `cslot relay add third --base-url https://relay.example.com/v1 --api-key sk-...`
+- `cslot status`
+- `cslot use relay third`
+- `cslot use auth`
 - `cslot start`
 
 ## 架构
@@ -102,6 +112,7 @@ codex-slot stop
 - `src/status-command.ts`：额度刷新输出与交互式启用开关界面
 - `src/codex-config.ts`：受管 `~/.codex/config.toml` 写入与恢复逻辑
 - `src/backend-proxy-service.ts`：Codex 插件与运行时请求使用的 ChatGPT backend 代理
+- `src/relay-proxy-service.ts`、`src/model-proxy-dispatcher.ts`、`src/relay-store.ts`：可选 OpenAI-compatible 中转槽位与 `/v1/*` 模型请求分发
 - `src/account-store.ts`、`src/usage-sync.ts`、`src/scheduler.ts`、`src/status.ts`：核心领域与运行时逻辑
 - `src/text.ts`：共享的中英双语文本与去 locale 化格式化工具
 
@@ -143,6 +154,27 @@ wire_api = "responses"
 - 如果通过 `cslot start --port <端口>` 指定端口，会把端口写入 `~/.cslot/config.yaml`
 - 如果不指定端口，会优先尝试 `4399`，冲突时自动顺延到下一个空闲端口，并把实际启动端口写入 `~/.cslot/config.yaml` 与受管 provider 配置
 - `/backend-api/*` 请求会透传到 ChatGPT backend，并由 cslot 内部替换为当前调度账号的上游 token；客户端传入的 `Authorization` 不会继续透传到上游
+
+## OpenAI-compatible 中转槽位
+
+中转槽位只作为模型请求出口，不替代官方 Codex / ChatGPT 登录态。
+使用 `cslot relay add` 录入中转槽位后，日常启用、禁用和模型出口选择都可以在 `cslot status` 交互界面里完成。
+
+```bash
+cslot relay add third --base-url https://relay.example.com/v1 --api-key sk-...
+cslot use relay third
+cslot current
+```
+
+行为规则：
+
+- `/v1/*` 模型请求固定走当前选择的中转槽位
+- 中转请求使用 relay slot 自己的 API key；客户端传入的 `Authorization` 不会透传到上游
+- 中转失败会直接返回，不会自动回退到官方 cslot 账号
+- `/backend-api/*` 插件与运行时请求仍然使用当前选择的官方 Codex / ChatGPT 登录态
+- 额度刷新只针对官方账号，不刷新中转槽位
+- 在交互式 `status` 中，按 `Space` 启用/禁用当前选中的账号或中转槽位，按 `m` 选择模型出口
+- 执行 `cslot use auth` 后，`/v1/*` 模型请求恢复为官方账号自动调度
 
 ## Codex App 插件
 

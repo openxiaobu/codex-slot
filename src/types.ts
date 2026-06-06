@@ -57,6 +57,25 @@ export interface ManagedAccount {
   imported_at?: string;
 }
 
+export interface RelaySlot {
+  id: string;
+  name: string;
+  base_url: string;
+  api_key: string;
+  enabled: boolean;
+  imported_at?: string;
+}
+
+export type ModelRouteSelection =
+  | {
+      mode: "auth_pool";
+      relay_slot_id?: null;
+    }
+  | {
+      mode: "relay_slot";
+      relay_slot_id: string;
+    };
+
 export interface CslotConfig {
   version: number;
   server: {
@@ -71,6 +90,7 @@ export interface CslotConfig {
     oauth_client_id: string;
   };
   accounts: ManagedAccount[];
+  relay_slots: RelaySlot[];
 }
 
 export interface AccountRuntimeStatus {
@@ -166,6 +186,7 @@ export interface ManagedCodexAuthState {
 export interface CslotState {
   state_version: number;
   selected_codex_auth_account_id?: string | null;
+  selected_model_route?: ModelRouteSelection | null;
   account_blocks: Record<string, AccountBlockState>;
   usage_cache: Record<string, UsageRefreshResult>;
   usage_refresh_errors: Record<string, UsageRefreshError>;

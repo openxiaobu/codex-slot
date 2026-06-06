@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
+  renderRelayStatusDetails,
+  renderRelayStatusTable,
   renderStatusDetails,
   renderStatusTable
 } = require("../dist/status.js");
@@ -134,4 +136,33 @@ test("紧凑状态表在窄终端按显示宽度截断账号名", () => {
 
   assert.match(narrowTable, /1\+001.*…/);
   assert.doesNotMatch(narrowTable, /1\+001（26\.05\.30）\*/);
+});
+
+test("relay 状态表展示启用状态和当前模型出口", () => {
+  const slots = [
+    {
+      id: "third",
+      name: "third*",
+      base_url: "https://relay.example.com/v1",
+      api_key: "relay-secret",
+      enabled: true
+    }
+  ];
+
+  const table = renderRelayStatusTable(slots, {
+    compact: true,
+    maxWidth: 80,
+    selectorColumn: {
+      enabledById: { third: true },
+      cursorRelayId: "third"
+    }
+  });
+  const details = renderRelayStatusDetails(slots[0], { maxWidth: 80, header: false });
+
+  assert.match(table, /RELAY\s+STATUS\s+BASE_URL/);
+  assert.match(table, />\[x\]\s+third\*/);
+  assert.match(table, /enabled/);
+  assert.match(details, /slot\s+third\*/);
+  assert.match(details, /base\s+https:\/\/relay\.example\.com\/v1/);
+  assert.doesNotMatch(details, /relay-secret/);
 });

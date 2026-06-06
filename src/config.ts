@@ -14,6 +14,15 @@ const managedAccountSchema = z.object({
   imported_at: z.string().optional()
 });
 
+const relaySlotSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  base_url: z.string().url(),
+  api_key: z.string().min(1),
+  enabled: z.boolean().default(true),
+  imported_at: z.string().optional()
+});
+
 const configSchema = z.object({
   version: z.number().int().default(1),
   server: z
@@ -40,7 +49,8 @@ const configSchema = z.object({
       auth_base_url: "https://auth.openai.com",
       oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
     }),
-  accounts: z.array(managedAccountSchema).default([])
+  accounts: z.array(managedAccountSchema).default([]),
+  relay_slots: z.array(relaySlotSchema).default([])
 });
 
 /**
@@ -139,7 +149,8 @@ export function loadConfig(): CslotConfig {
         auth_base_url: "https://auth.openai.com",
         oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
       },
-      accounts: []
+      accounts: [],
+      relay_slots: []
     };
 
     saveConfig(defaultConfig);

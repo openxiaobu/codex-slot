@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import type { IncomingHttpHeaders } from "node:http";
 import { loadConfig } from "./config";
 import { proxyChatGptBackendWithRetry } from "./backend-proxy-service";
-import { proxyCodexWithRetry } from "./proxy-retry-service";
+import { proxyModelWithRoute } from "./model-proxy-dispatcher";
 import { collectAccountStatuses } from "./status";
 import { pickBestAccount } from "./scheduler";
 import { refreshAccountUsage } from "./usage-sync";
@@ -130,7 +130,7 @@ export async function startServer(port: number): Promise<void> {
     reply: ProxyReply
   ) => {
     const requestBody = await readRawRequestBody(request.body);
-    const result = await proxyCodexWithRetry({
+    const result = await proxyModelWithRoute({
       method: request.method,
       url: request.url,
       headers: request.headers,

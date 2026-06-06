@@ -6,6 +6,7 @@ import type {
   CslotState,
   ManagedCodexAuthState,
   ManagedCodexConfigState,
+  ModelRouteSelection,
   UsageRefreshError,
   UsageRefreshResult
 } from "./types";
@@ -30,6 +31,9 @@ function createDefaultState(): CslotState {
   return {
     state_version: STATE_SCHEMA_VERSION,
     selected_codex_auth_account_id: null,
+    selected_model_route: {
+      mode: "auth_pool"
+    },
     account_blocks: {},
     usage_cache: {},
     usage_refresh_errors: {},
@@ -53,12 +57,37 @@ function normalizeState(parsed: Partial<CslotState> | null | undefined): CslotSt
     state_version: STATE_SCHEMA_VERSION,
     selected_codex_auth_account_id:
       parsed?.selected_codex_auth_account_id ?? defaults.selected_codex_auth_account_id,
+    selected_model_route: normalizeModelRouteSelection(
+      parsed?.selected_model_route ?? defaults.selected_model_route
+    ),
     account_blocks: parsed?.account_blocks ?? defaults.account_blocks,
     usage_cache: parsed?.usage_cache ?? defaults.usage_cache,
     usage_refresh_errors: parsed?.usage_refresh_errors ?? defaults.usage_refresh_errors,
     scheduler_stats: parsed?.scheduler_stats ?? defaults.scheduler_stats,
     managed_codex_auth: parsed?.managed_codex_auth ?? defaults.managed_codex_auth,
     managed_codex_config: parsed?.managed_codex_config ?? defaults.managed_codex_config
+  };
+}
+
+/**
+ * 归一化当前模型出口选择，避免历史 state 或手工编辑内容让代理入口进入未知模式。
+ *
+ * @param value state 文件中记录的模型出口选择。
+ * @returns 可安全使用的模型出口选择；非法内容回退到官方账号池。
+ * @throws 无显式抛出。
+ */
+function normalizeModelRouteSelection(
+  value: ModelRouteSelection | null | undefined
+): ModelRouteSelection {
+  if (value?.mode === "relay_slot" && value.relay_slot_id) {
+    return {
+      mode: "relay_slot",
+      relay_slot_id: value.relay_slot_id
+    };
+  }
+
+  return {
+    mode: "auth_pool"
   };
 }
 
@@ -268,6 +297,34 @@ export function getSelectedCodexAuthAccountId(): string | null {
 export function setSelectedCodexAuthAccountId(accountId: string | null): void {
   updateState((state) => {
     state.selected_codex_auth_account_id = accountId;
+  });
+}
+
+/**
+ * 读取当前模型请求出口选择。
+ *
+ * 业务含义：
+ * 1. `auth_pool` 表示 `/v1/*` 继续走官方账号自动调度。
+ * 2. `relay_slot` 表示 `/v1/*` 固定走指定 OpenAI-compatible 中转槽位。
+ * 3. 该选择不影响 Codex App 主登录态与 `/backend-api/*` 插件链路。
+ *
+ * @returns 当前模型出口选择。
+ * @throws 当 state 文件读取或解析失败时透传底层异常。
+ */
+export function getSelectedModelRoute(): ModelRouteSelection {
+  return normalizeModelRouteSelection(loadState().selected_model_route);
+}
+
+/**
+ * 保存当前模型请求出口选择。
+ *
+ * @param selection 模型出口选择；`null` 表示恢复官方账号池。
+ * @returns 无返回值。
+ * @throws 当 state 文件写入失败时透传底层异常。
+ */
+export function setSelectedModelRoute(selection: ModelRouteSelection | null): void {
+  updateState((state) => {
+    state.selected_model_route = normalizeModelRouteSelection(selection);
   });
 }
 

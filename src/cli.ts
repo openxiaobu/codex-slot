@@ -8,6 +8,17 @@ import {
 } from "./account-commands";
 import { getCliVersion } from "./cli-helpers";
 import { getCslotHome, loadConfig } from "./config";
+import {
+  handleCurrent,
+  handleRelayAdd,
+  handleRelayDisable,
+  handleRelayEnable,
+  handleRelayList,
+  handleRelayRemove,
+  handleRelayRename,
+  handleUseAuthPool,
+  handleUseRelay
+} from "./relay-commands";
 import { handleStart, handleStop } from "./service-control";
 import { handleStatus, type StatusCommandOptions } from "./status-command";
 import { bi } from "./text";
@@ -99,6 +110,77 @@ function registerAccountCommands(program: Command): void {
 }
 
 /**
+ * 注册 relay 与模型出口选择相关子命令。
+ *
+ * @param program Commander 程序实例。
+ * @returns 无返回值。
+ * @throws 无显式抛出。
+ */
+function registerRelayCommands(program: Command): void {
+  const relay = program
+    .command("relay")
+    .description(bi("管理 OpenAI-compatible 中转槽位", "Manage OpenAI-compatible relay slots"));
+
+  relay
+    .command("add")
+    .description(bi("新增一个中转槽位", "Add a relay slot"))
+    .argument("<name>", bi("中转槽位名", "Relay slot name"))
+    .requiredOption("--base-url <url>", bi("OpenAI-compatible base_url，通常以 /v1 结尾", "OpenAI-compatible base_url, usually ending with /v1"))
+    .requiredOption("--api-key <key>", bi("中转 API key", "Relay API key"))
+    .action(handleRelayAdd);
+
+  relay
+    .command("list")
+    .description(bi("列出中转槽位", "List relay slots"))
+    .action(handleRelayList);
+
+  relay
+    .command("del")
+    .description(bi("删除一个中转槽位", "Remove a relay slot"))
+    .argument("<name>", bi("中转槽位名", "Relay slot name"))
+    .action(handleRelayRemove);
+
+  relay
+    .command("rename")
+    .description(bi("重命名一个中转槽位", "Rename a relay slot"))
+    .argument("<oldName>", bi("原中转槽位名", "Old relay slot name"))
+    .argument("<newName>", bi("新中转槽位名", "New relay slot name"))
+    .action(handleRelayRename);
+
+  relay
+    .command("enable")
+    .description(bi("启用一个中转槽位", "Enable a relay slot"))
+    .argument("<name>", bi("中转槽位名", "Relay slot name"))
+    .action(handleRelayEnable);
+
+  relay
+    .command("disable")
+    .description(bi("禁用一个中转槽位", "Disable a relay slot"))
+    .argument("<name>", bi("中转槽位名", "Relay slot name"))
+    .action(handleRelayDisable);
+
+  const use = program
+    .command("use")
+    .description(bi("切换模型请求出口", "Switch model route"));
+
+  use
+    .command("relay")
+    .description(bi("固定模型请求到指定中转槽位", "Fix model route to a relay slot"))
+    .argument("<name>", bi("中转槽位名", "Relay slot name"))
+    .action(handleUseRelay);
+
+  use
+    .command("auth")
+    .description(bi("恢复模型请求到官方账号池", "Restore model route to the official auth pool"))
+    .action(handleUseAuthPool);
+
+  program
+    .command("current")
+    .description(bi("查看当前模型出口与 Codex App 登录态选择", "Show current model route and Codex App auth selection"))
+    .action(handleCurrent);
+}
+
+/**
  * 注册配置与状态相关子命令。
  *
  * @param program Commander 程序实例。
@@ -155,6 +237,7 @@ async function main(): Promise<void> {
 
   configureRootProgram(program);
   registerAccountCommands(program);
+  registerRelayCommands(program);
   registerRuntimeCommands(program);
 
   await program.parseAsync(process.argv);

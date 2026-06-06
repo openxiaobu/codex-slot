@@ -4,16 +4,21 @@ import { listAccounts } from "./app/account-service";
 import {
   getStatusSnapshot,
   persistAccountEnabledState,
+  persistRelayEnabledState,
   refreshStatusSnapshot
 } from "./app/status-service";
 import { pickBestAccount } from "./scheduler";
 import {
   getSelectedCodexAuthAccountId,
-  setSelectedCodexAuthAccountId
+  getSelectedModelRoute,
+  setSelectedCodexAuthAccountId,
+  setSelectedModelRoute
 } from "./state";
 import { applyManagedCodexAuth, deactivateManagedCodexAuth } from "./codex-auth";
 import {
   collectAccountStatuses,
+  renderRelayStatusDetails,
+  renderRelayStatusTable,
   renderStatusDetails,
   renderStatusTable,
   summarizeAccountStatuses
@@ -297,6 +302,26 @@ function resolveInitialCursorIndex(
   return 0;
 }
 
+type InteractiveStatusItem =
+  | {
+      type: "account";
+      id: string;
+    }
+  | {
+      type: "relay";
+      id: string;
+    };
+
+function buildInteractiveItems(
+  accounts: Array<{ id: string }>,
+  relaySlots: Array<{ id: string }>
+): InteractiveStatusItem[] {
+  return [
+    ...accounts.map((account) => ({ type: "account" as const, id: account.id })),
+    ...relaySlots.map((slot) => ({ type: "relay" as const, id: slot.id }))
+  ];
+}
+
 /**
  * 将状态面板中选中的账号立即应用为 Codex App 主登录态。
  *
@@ -346,20 +371,34 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
   stdin.setRawMode?.(true);
 
   const accountsFromConfig = listAccounts();
-  if (accountsFromConfig.length === 0) {
-    console.log(bi("当前没有已录入账号。", "No managed accounts found."));
+  const latestSnapshotForRelays = getStatusSnapshot();
+  const relaySlotsFromConfig = latestSnapshotForRelays.relaySlots;
+  if (accountsFromConfig.length === 0 && relaySlotsFromConfig.length === 0) {
+    console.log(bi("当前没有已录入账号或中转槽位。", "No managed accounts or relay slots found."));
     stdin.setRawMode?.(false);
     return;
   }
 
   const accounts = [...accountsFromConfig].sort((left, right) => left.name.localeCompare(right.name));
+  const relaySlots = [...relaySlotsFromConfig].sort((left, right) => left.name.localeCompare(right.name));
   let selectedAuthAccountId = getSelectedCodexAuthAccountId();
-  let cursor = resolveInitialCursorIndex(
+  const initialItems = buildInteractiveItems(accounts, relaySlots);
+  const selectedModelRoute = getSelectedModelRoute();
+  const initialAccountCursor = resolveInitialCursorIndex(
     accounts,
     initialStatuses ?? collectAccountStatuses(),
     selectedAuthAccountId
   );
-  let changed = false;
+  const selectedRelayIndex =
+    selectedModelRoute.mode === "relay_slot"
+      ? relaySlots.findIndex((slot) => slot.id === selectedModelRoute.relay_slot_id)
+      : -1;
+  let cursor =
+    selectedRelayIndex >= 0
+      ? accounts.length + selectedRelayIndex
+      : Math.min(initialAccountCursor, Math.max(0, initialItems.length - 1));
+  let accountChanged = false;
+  let relayChanged = false;
 
   enterInteractiveScreen();
 
@@ -372,7 +411,9 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
       const screenWidth = process.stdout.columns ?? 80;
       const styled = shouldUseAnsiStyle();
       const latestSnapshot = getStatusSnapshot();
-      const statusSource = changed ? latestSnapshot.statuses : (initialStatuses ?? latestSnapshot.statuses);
+      const items = buildInteractiveItems(accounts, relaySlots);
+      const currentSelection = items[cursor] ?? null;
+      const statusSource = accountChanged ? latestSnapshot.statuses : (initialStatuses ?? latestSnapshot.statuses);
       const statusById = new Map(statusSource.map((item) => [item.id, item]));
       const autoSelectedId = pickBestAccount()?.account.id ?? null;
       const summary = summarizeAccountStatuses(statusSource);
@@ -392,7 +433,24 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
           };
         })
         .filter((item): item is AccountRuntimeStatus => item !== null);
-      const currentItem = displayStatuses.find((item) => item.id === accounts[cursor]?.id) ?? null;
+      const displayRelays = relaySlots.map((slot) => {
+        const selected =
+          latestSnapshot.modelRoute.mode === "relay_slot" &&
+          latestSnapshot.modelRoute.relay_slot_id === slot.id;
+
+        return {
+          ...slot,
+          name: selected ? `${slot.name}*` : slot.name
+        };
+      });
+      const currentAccount =
+        currentSelection?.type === "account"
+          ? displayStatuses.find((item) => item.id === currentSelection.id) ?? null
+          : null;
+      const currentRelay =
+        currentSelection?.type === "relay"
+          ? displayRelays.find((item) => item.id === currentSelection.id) ?? null
+          : null;
       const wideLayout = screenWidth >= 104;
       const leftWidth = wideLayout ? Math.max(68, Math.floor(screenWidth * 0.64)) : screenWidth;
       const rightWidth = wideLayout ? Math.max(28, screenWidth - leftWidth - 3) : screenWidth;
@@ -404,31 +462,56 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
           styled,
           selectorColumn: {
             enabledById: Object.fromEntries(accounts.map((account) => [account.id, account.enabled])),
-            cursorAccountId: accounts[cursor]?.id ?? null
+            cursorAccountId: currentSelection?.type === "account" ? currentSelection.id : null
           }
         }).split("\n")
       ];
+      const relayLines = [
+        renderSectionHeader("relays", leftWidth, styled),
+        ...(displayRelays.length > 0
+          ? renderRelayStatusTable(displayRelays, {
+              compact: true,
+              maxWidth: leftWidth,
+              styled,
+              selectorColumn: {
+                enabledById: Object.fromEntries(relaySlots.map((slot) => [slot.id, slot.enabled])),
+                cursorRelayId: currentSelection?.type === "relay" ? currentSelection.id : null
+              }
+            }).split("\n")
+          : ["-"])
+      ];
+      const currentDetails =
+        currentSelection?.type === "relay"
+          ? renderRelayStatusDetails(currentRelay, { maxWidth: rightWidth, header: false }).split("\n")
+          : renderStatusDetails(currentAccount, { maxWidth: rightWidth, header: false }).split("\n");
       const sideLines = [
         renderSectionHeader("current", rightWidth, styled),
-        ...renderStatusDetails(currentItem, { maxWidth: rightWidth, header: false }).split("\n"),
+        ...currentDetails,
         "",
         renderSectionHeader("summary", rightWidth, styled),
         renderSummaryLine(summary, rightWidth < 42, styled),
+        `model_route=${latestSnapshot.modelRouteLabel}`,
         `scheduler=${latestSnapshot.selectedName ?? "none"}`,
         `codex_auth=${selectedAuthAccountId ?? "none"}`,
+        `relay_slots=${latestSnapshot.relaySlots.length}`,
         ...(refreshStatusText ? [`refresh=${refreshStatusText}`] : []),
         "",
         renderSectionHeader("help", rightWidth, styled),
-        "↑/↓ move    Space toggle    a app-auth    c clear    r refresh    Enter/q exit"
+        "↑/↓ move    Space toggle    a app-auth    m model-route    c clear    r refresh    Enter/q exit"
+      ];
+      const leftLines = [
+        ...accountLines,
+        "",
+        ...relayLines
       ];
 
       if (wideLayout) {
-        renderInteractiveScreen(renderColumns(accountLines, sideLines, 3));
+        renderInteractiveScreen(renderColumns(leftLines, sideLines, 3));
         return;
       }
 
       renderInteractiveScreen([
-        ...accountLines,
+        ...leftLines,
         "",
         renderDivider(screenWidth, styled),
         ...sideLines
@@ -436,13 +519,20 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
     };
 
     const applyChanges = () => {
-      if (!changed) {
+      if (!accountChanged && !relayChanged) {
         return;
       }
 
-      persistAccountEnabledState(accounts);
-      changed = false;
-      initialStatuses = collectAccountStatuses();
+      if (accountChanged) {
+        persistAccountEnabledState(accounts);
+        accountChanged = false;
+        initialStatuses = collectAccountStatuses();
+      }
+
+      if (relayChanged) {
+        persistRelayEnabledState(relaySlots);
+        relayChanged = false;
+      }
     };
 
     const exitInteractive = () => {
@@ -472,7 +562,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
       }
 
       if (key.name === "down") {
-        const nextCursor = Math.min(accounts.length - 1, cursor + 1);
+        const nextCursor = Math.min(buildInteractiveItems(accounts, relaySlots).length - 1, cursor + 1);
         if (nextCursor !== cursor) {
           cursor = nextCursor;
           render();
@@ -481,15 +571,34 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
       }
 
       if (key.name === "space") {
-        accounts[cursor].enabled = !accounts[cursor].enabled;
-        changed = true;
+        const item = buildInteractiveItems(accounts, relaySlots)[cursor];
+        if (item?.type === "account") {
+          const account = accounts.find((candidate) => candidate.id === item.id);
+          if (account) {
+            account.enabled = !account.enabled;
+            accountChanged = true;
+          }
+        } else if (item?.type === "relay") {
+          const slot = relaySlots.find((candidate) => candidate.id === item.id);
+          if (slot) {
+            slot.enabled = !slot.enabled;
+            relayChanged = true;
+          }
+        }
         applyChanges();
         render();
         return;
       }
 
       if (key.name === "a") {
-        const account = accounts[cursor];
+        const item = buildInteractiveItems(accounts, relaySlots)[cursor];
+        if (item?.type !== "account") {
+          refreshStatusText = "app-auth requires account";
+          render();
+          return;
+        }
+
+        const account = accounts.find((candidate) => candidate.id === item.id);
         if (!account) {
           return;
         }
@@ -503,6 +612,38 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
 
         selectedAuthAccountId = account.id;
         refreshStatusText = `codex_auth=${account.id}`;
+        render();
+        return;
+      }
+
+      if (key.name === "m") {
+        const item = buildInteractiveItems(accounts, relaySlots)[cursor];
+
+        if (item?.type === "relay") {
+          const slot = relaySlots.find((candidate) => candidate.id === item.id);
+          if (!slot) {
+            return;
+          }
+
+          if (!slot.enabled) {
+            refreshStatusText = `relay_disabled=${slot.id}`;
+            render();
+            return;
+          }
+
+          setSelectedModelRoute({
+            mode: "relay_slot",
+            relay_slot_id: slot.id
+          });
+          refreshStatusText = `model_route=relay:${slot.id}`;
+          render();
+          return;
+        }
+
+        setSelectedModelRoute({
+          mode: "auth_pool"
+        });
+        refreshStatusText = "model_route=auth_pool";
         render();
         return;
       }
@@ -579,8 +720,23 @@ export async function handleStatus(options?: StatusCommandOptions): Promise<void
   }));
 
   console.log(renderStatusTable(displayStatuses));
+  if (snapshot.relaySlots.length > 0) {
+    const displayRelays = snapshot.relaySlots.map((slot) => ({
+      ...slot,
+      name:
+        snapshot.modelRoute.mode === "relay_slot" &&
+        snapshot.modelRoute.relay_slot_id === slot.id
+          ? `${slot.name}*`
+          : slot.name
+    }));
+
+    console.log("");
+    console.log(renderRelayStatusTable(displayRelays));
+  }
   console.log("");
   console.log(`available=${snapshot.summary.available} 5h_limited=${snapshot.summary.fiveHourLimited} weekly_limited=${snapshot.summary.weeklyLimited}`);
+  console.log(`model_route=${snapshot.modelRouteLabel}`);
   console.log(`scheduler=${snapshot.selectedName ?? "none"}`);
   console.log(`codex_auth=${snapshot.codexAuthAccountId ?? "none"}`);
+  console.log(`relay_slots=${snapshot.relaySlots.length}`);
 }

@@ -5,11 +5,16 @@ import {
   summarizeAccountStatuses
 } from "../status";
 import { getSelectedCodexAuthAccountId } from "../state";
+import { listRelaySlots } from "../relay-store";
+import { getSelectedModelRoute } from "../state";
 import { refreshAllAccountUsage } from "../usage-sync";
-import type { AccountRuntimeStatus } from "../types";
+import type { AccountRuntimeStatus, ModelRouteSelection, RelaySlot } from "../types";
 
 export interface StatusSnapshot {
   statuses: AccountRuntimeStatus[];
+  relaySlots: RelaySlot[];
+  modelRoute: ModelRouteSelection;
+  modelRouteLabel: string;
   selectedName: string | null;
   codexAuthAccountId: string | null;
   summary: {
@@ -17,6 +22,14 @@ export interface StatusSnapshot {
     fiveHourLimited: number;
     weeklyLimited: number;
   };
+}
+
+function formatModelRouteLabel(route: ModelRouteSelection): string {
+  if (route.mode === "relay_slot") {
+    return `relay:${route.relay_slot_id}`;
+  }
+
+  return "auth_pool";
 }
 
 /**
@@ -39,9 +52,13 @@ export async function refreshStatusSnapshot(): Promise<StatusSnapshot> {
 export function getStatusSnapshot(): StatusSnapshot {
   const statuses = collectAccountStatuses();
   const selected = pickBestAccount();
+  const modelRoute = getSelectedModelRoute();
 
   return {
     statuses,
+    relaySlots: listRelaySlots(),
+    modelRoute,
+    modelRouteLabel: formatModelRouteLabel(modelRoute),
     selectedName: selected?.account.name ?? null,
     codexAuthAccountId: getSelectedCodexAuthAccountId(),
     summary: summarizeAccountStatuses(statuses)
@@ -64,6 +81,28 @@ export function persistAccountEnabledState(
     const index = latest.accounts.findIndex((item) => item.id === account.id);
     if (index >= 0) {
       latest.accounts[index].enabled = account.enabled;
+    }
+  }
+
+  saveConfig(latest);
+}
+
+/**
+ * 将交互式界面中的 relay 启用状态修改写回配置文件。
+ *
+ * @param slots 用户在交互界面中调整后的 relay slot 数组。
+ * @returns 无返回值。
+ * @throws 当配置写入失败时抛出异常。
+ */
+export function persistRelayEnabledState(
+  slots: Array<{ id: string; enabled: boolean }>
+): void {
+  const latest = loadConfig();
+
+  for (const slot of slots) {
+    const index = latest.relay_slots.findIndex((item) => item.id === slot.id);
+    if (index >= 0) {
+      latest.relay_slots[index].enabled = slot.enabled;
     }
   }
 

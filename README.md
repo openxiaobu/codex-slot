@@ -10,6 +10,7 @@
 - Manage multiple accounts or workspaces as separate slots
 - Refresh and cache the latest usage from the official usage endpoint
 - Expose a local provider endpoint for Codex
+- Optionally pin model requests to an OpenAI-compatible relay slot
 - Proxy ChatGPT backend plugin requests through the selected cslot account
 - Apply local block rules for temporary, 5-hour, and weekly limits
 - Automatically switch `~/.codex/config.toml` to the `cslot` provider while the local proxy is running (and restore it on stop)
@@ -89,12 +90,21 @@ codex-slot import <name> [HOME]
 codex-slot status
 codex-slot start [--port <port>]
 codex-slot stop
+codex-slot relay add <name> --base-url <url> --api-key <key>
+codex-slot relay list
+codex-slot use relay <name>
+codex-slot use auth
+codex-slot current
 ```
 
 Common patterns:
 
 - `cslot import work ~/workspace-home`
 - `cslot rename work work-main`
+- `cslot relay add third --base-url https://relay.example.com/v1 --api-key sk-...`
+- `cslot status`
+- `cslot use relay third`
+- `cslot use auth`
 - `cslot start`
 
 ## Architecture
@@ -108,6 +118,7 @@ The project is intentionally split by responsibility:
 - `src/status-command.ts`: usage refresh output and interactive toggle UI
 - `src/codex-config.ts`: managed `~/.codex/config.toml` apply/restore logic
 - `src/backend-proxy-service.ts`: ChatGPT backend proxy for Codex plugin/runtime requests
+- `src/relay-proxy-service.ts`, `src/model-proxy-dispatcher.ts`, `src/relay-store.ts`: optional OpenAI-compatible relay slots and `/v1/*` model route dispatch
 - `src/account-store.ts`, `src/usage-sync.ts`, `src/scheduler.ts`, `src/status.ts`: core domain and runtime logic
 - `src/text.ts`: shared bilingual text and locale-independent formatting helpers
 
@@ -145,6 +156,27 @@ Behavior:
 - If you start without `--port`, `4399` is preferred first and the next free port is chosen automatically on conflict, and the actual chosen port is written back to `~/.cslot/config.yaml` and the managed provider block
 - `requires_openai_auth = true` keeps Codex App treating the local cslot provider as a ChatGPT-authenticated provider, so plugin navigation and trusted plugin runtimes are not disabled as API-key/custom-provider mode
 - `/backend-api/*` requests are forwarded to ChatGPT backend with the current selected account's upstream token; client `Authorization` headers are not forwarded upstream
+
+## OpenAI-compatible Relay Slots
+
+Relay slots are optional model-only exits. They do not replace the official Codex / ChatGPT login state.
+Use `codex-slot relay add` to register a relay slot, then use `codex-slot status` for daily enable/disable and model-route selection.
+
+```bash
+codex-slot relay add third --base-url https://relay.example.com/v1 --api-key sk-...
+codex-slot use relay third
+codex-slot current
+```
+
+Behavior:
+
+- `/v1/*` model requests are fixed to the selected relay slot
+- Relay requests use the relay slot API key; client `Authorization` headers are not forwarded upstream
+- Relay failures are returned directly and do not fall back to official cslot accounts
+- `/backend-api/*` plugin/runtime requests still use the selected official Codex / ChatGPT login state
+- Usage refresh only applies to official accounts, not relay slots
+- In interactive `status`, press `Space` to enable/disable the selected account or relay slot, and press `m` to select the model route
+- Run `codex-slot use auth` to restore `/v1/*` model requests to the official account scheduler
 
 ## Codex App Plugins
 

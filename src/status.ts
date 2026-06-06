@@ -5,12 +5,22 @@ import {
 } from "./account-store";
 import { getAccountBlock, getUsageCache, getUsageRefreshError } from "./state";
 import { formatLocalDateTime } from "./text";
-import type { AccountRuntimeStatus } from "./types";
+import type { AccountRuntimeStatus, RelaySlot } from "./types";
 
 interface StatusTableRenderOptions {
   selectorColumn?: {
     enabledById: Record<string, boolean>;
     cursorAccountId: string | null;
+  };
+  compact?: boolean;
+  maxWidth?: number;
+  styled?: boolean;
+}
+
+interface RelayStatusTableRenderOptions {
+  selectorColumn?: {
+    enabledById: Record<string, boolean>;
+    cursorRelayId: string | null;
   };
   compact?: boolean;
   maxWidth?: number;
@@ -713,4 +723,95 @@ export function renderStatusDetails(
   }
 
   return lines.join("\n");
+}
+
+/**
+ * 将 relay slot 状态渲染为适合终端输出的表格文本。
+ *
+ * @param slots 待展示的 relay slot 列表。
+ * @param options 渲染选项；交互模式下可传入选择列配置。
+ * @returns 可直接打印到终端的表格字符串。
+ * @throws 无显式抛出。
+ */
+export function renderRelayStatusTable(
+  slots: RelaySlot[],
+  options?: RelayStatusTableRenderOptions
+): string {
+  const selectorColumn = options?.selectorColumn;
+  const compact = options?.compact ?? false;
+  const maxWidth = options?.maxWidth ?? Number.POSITIVE_INFINITY;
+  const compactHeader = maxWidth < 68;
+  const relayHeader = compactHeader ? "ID" : "RELAY";
+  const statusHeader = compactHeader ? "ST" : "STATUS";
+  const relayWidth = Math.max(
+    getDisplayWidth(relayHeader),
+    ...slots.map((item) => getDisplayWidth(item.name))
+  );
+  const statusWidth = compactHeader ? 8 : 10;
+  const fixedWidth = (selectorColumn ? 4 + 2 : 0) + relayWidth + 2 + statusWidth + 2;
+  const baseUrlWidth = Number.isFinite(maxWidth)
+    ? Math.max(12, Math.floor(maxWidth) - fixedWidth)
+    : Math.max(getDisplayWidth("BASE_URL"), ...slots.map((item) => getDisplayWidth(item.base_url)));
+  const rows = [
+    [
+      ...(selectorColumn ? [" "] : []),
+      relayHeader,
+      statusHeader,
+      "BASE_URL"
+    ]
+  ];
+
+  for (const slot of slots) {
+    const selectorCell = selectorColumn
+      ? `${selectorColumn.cursorRelayId === slot.id ? ">" : " "}[${
+          selectorColumn.enabledById[slot.id] ? "x" : " "
+        }]`
+      : null;
+    const status = slot.enabled ? "enabled" : "disabled";
+
+    rows.push([
+      ...(selectorCell ? [selectorCell] : []),
+      styleNameCell(truncateCell(slot.name, relayWidth), options?.styled ?? false),
+      truncateCell(status, statusWidth),
+      truncateCell(slot.base_url, baseUrlWidth)
+    ]);
+  }
+
+  const widths = rows[0].map((_, columnIndex) =>
+    Math.max(...rows.map((row) => getDisplayWidth(row[columnIndex])))
+  );
+
+  return rows
+    .map((row) => row.map((cell, index) => padCell(cell, widths[index])).join("  "))
+    .join("\n");
+}
+
+/**
+ * 将当前选中 relay slot 渲染为紧凑详情区。
+ *
+ * @param slot 当前选中的 relay slot；为空时返回占位提示。
+ * @param options 详情区渲染选项。
+ * @returns 适合直接打印的详情区文本。
+ * @throws 无显式抛出。
+ */
+export function renderRelayStatusDetails(
+  slot: RelaySlot | null,
+  options?: { maxWidth?: number; header?: boolean }
+): string {
+  const includeHeader = options?.header ?? true;
+
+  if (!slot) {
+    return [includeHeader ? "[ relay ]" : "slot   -", includeHeader ? "slot   -" : ""]
+      .filter((line) => line.length > 0)
+      .join("\n");
+  }
+
+  const maxWidth = options?.maxWidth ?? Number.POSITIVE_INFINITY;
+  return [
+    ...(includeHeader ? ["[ relay ]"] : []),
+    formatDetailLine("slot", slot.name, maxWidth),
+    formatDetailLine("status", slot.enabled ? "enabled" : "disabled", maxWidth),
+    formatDetailLine("base", slot.base_url, maxWidth),
+    formatDetailLine("key", "********", maxWidth)
+  ].join("\n");
 }
