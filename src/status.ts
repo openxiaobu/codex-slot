@@ -750,7 +750,7 @@ export function renderRelayStatusTable(
   const statusWidth = compactHeader ? 8 : 10;
   const fixedWidth = (selectorColumn ? 4 + 2 : 0) + relayWidth + 2 + statusWidth + 2;
   const baseUrlWidth = Number.isFinite(maxWidth)
-    ? Math.max(12, Math.floor(maxWidth) - fixedWidth)
+    ? Math.max(12, Math.min(72, Math.floor(maxWidth) - fixedWidth))
     : Math.max(getDisplayWidth("BASE_URL"), ...slots.map((item) => getDisplayWidth(item.base_url)));
   const rows = [
     [

@@ -24,6 +24,41 @@ import { handleStatus, type StatusCommandOptions } from "./status-command";
 import { bi } from "./text";
 
 /**
+ * 生成根 help 中的 relay 与模型出口命令说明。
+ *
+ * 业务含义：
+ * 1. Commander 默认命令列表会按终端宽度折行，中英混排时可读性较差。
+ * 2. 最近新增的 relay/use/current 命令需要用固定双语格式补充业务含义和使用方式。
+ *
+ * @returns 可追加到根 help 的多行说明。
+ * @throws 无显式抛出。
+ */
+function renderRelayCommandHelp(): string[] {
+  return [
+    "",
+    "中转命令 / Relay commands:",
+    "  cslot relay add <name> --base-url <url> --api-key <key>",
+    "    中文: 新增 OpenAI-compatible 中转槽位。",
+    "    English: Add an OpenAI-compatible relay slot.",
+    "  cslot relay list",
+    "    中文: 查看全部中转槽位，API key 会脱敏。",
+    "    English: List relay slots with API keys masked.",
+    "  cslot relay enable <name> / cslot relay disable <name>",
+    "    中文: 控制某个中转槽位是否参与模型出口选择。",
+    "    English: Enable or disable a relay slot for model routing.",
+    "  cslot use relay <name>",
+    "    中文: 固定模型请求走指定中转槽位。",
+    "    English: Route model requests through the selected relay slot.",
+    "  cslot use auth",
+    "    中文: 恢复使用官方 Codex 账号池。",
+    "    English: Restore routing through the official Codex auth pool.",
+    "  cslot current",
+    "    中文: 查看当前模型出口和 Codex App 登录态选择。",
+    "    English: Show the active model route and Codex App auth selection."
+  ];
+}
+
+/**
  * 为 CLI 程序注册根级帮助信息与统一示例。
  *
  * @param program Commander 程序实例。
@@ -46,6 +81,7 @@ function configureRootProgram(program: Command): void {
       "  cslot rename work work-main",
       "  cslot start --port 4399",
       "  cslot status --no-interactive",
+      ...renderRelayCommandHelp(),
       "",
       `${bi("说明", "Notes")}:`,
       `  ${bi(
@@ -119,11 +155,11 @@ function registerAccountCommands(program: Command): void {
 function registerRelayCommands(program: Command): void {
   const relay = program
     .command("relay")
-    .description(bi("管理 OpenAI-compatible 中转槽位", "Manage OpenAI-compatible relay slots"));
+    .description(bi("管理中转槽位", "Manage relay slots"));
 
   relay
     .command("add")
-    .description(bi("新增一个中转槽位", "Add a relay slot"))
+    .description(bi("新增中转槽位", "Add relay slot"))
     .argument("<name>", bi("中转槽位名", "Relay slot name"))
     .requiredOption("--base-url <url>", bi("OpenAI-compatible base_url，通常以 /v1 结尾", "OpenAI-compatible base_url, usually ending with /v1"))
     .requiredOption("--api-key <key>", bi("中转 API key", "Relay API key"))
@@ -149,34 +185,34 @@ function registerRelayCommands(program: Command): void {
 
   relay
     .command("enable")
-    .description(bi("启用一个中转槽位", "Enable a relay slot"))
+    .description(bi("启用中转槽位", "Enable relay slot"))
     .argument("<name>", bi("中转槽位名", "Relay slot name"))
     .action(handleRelayEnable);
 
   relay
     .command("disable")
-    .description(bi("禁用一个中转槽位", "Disable a relay slot"))
+    .description(bi("禁用中转槽位", "Disable relay slot"))
     .argument("<name>", bi("中转槽位名", "Relay slot name"))
     .action(handleRelayDisable);
 
   const use = program
     .command("use")
-    .description(bi("切换模型请求出口", "Switch model route"));
+    .description(bi("切换模型出口", "Switch model route"));
 
   use
     .command("relay")
-    .description(bi("固定模型请求到指定中转槽位", "Fix model route to a relay slot"))
+    .description(bi("使用指定中转槽位", "Use relay slot"))
     .argument("<name>", bi("中转槽位名", "Relay slot name"))
     .action(handleUseRelay);
 
   use
     .command("auth")
-    .description(bi("恢复模型请求到官方账号池", "Restore model route to the official auth pool"))
+    .description(bi("使用官方账号池", "Use official auth pool"))
     .action(handleUseAuthPool);
 
   program
     .command("current")
-    .description(bi("查看当前模型出口与 Codex App 登录态选择", "Show current model route and Codex App auth selection"))
+    .description(bi("查看当前出口", "Show current route"))
     .action(handleCurrent);
 }
 

@@ -127,6 +127,35 @@ function renderSummaryLine(
 }
 
 /**
+ * 渲染交互状态面板的快捷键说明，并确保每一行都能放进右侧详情栏。
+ *
+ * 业务含义：
+ * 1. 状态页在宽终端使用双栏布局，右栏宽度可能仍然较窄。
+ * 2. 快捷键说明必须逐行展示，避免单条长 help 在终端自动换行后打乱面板。
+ *
+ * @param maxWidth 右侧详情栏可用显示宽度；小于等于 0 时返回空列表。
+ * @returns 逐行渲染后的快捷键说明。
+ * @throws 无显式抛出。
+ */
+export function renderInteractiveHelpLines(maxWidth: number): string[] {
+  if (maxWidth <= 0) {
+    return [];
+  }
+
+  const lines = [
+    "↑/↓    move/select",
+    "Space  toggle enabled",
+    "a      app auth",
+    "m      model route",
+    "c      clear app auth",
+    "r      refresh usage",
+    "Enter/q exit"
+  ];
+
+  return lines.map((line) => truncateVisible(line, maxWidth));
+}
+
+/**
  * 移除 ANSI 控制序列，避免布局计算把颜色码当成可见字符。
  *
  * @param value 可能包含 ANSI 样式的文本。
@@ -190,6 +219,44 @@ function getDisplayWidth(value: string): number {
  */
 function padVisible(value: string, width: number): string {
   return `${value}${" ".repeat(Math.max(0, width - getDisplayWidth(value)))}`;
+}
+
+/**
+ * 按显示宽度截断文本，保留省略号提示内容被压缩。
+ *
+ * @param value 原始文本。
+ * @param maxWidth 最大显示列宽。
+ * @returns 截断后的文本。
+ * @throws 无显式抛出。
+ */
+function truncateVisible(value: string, maxWidth: number): string {
+  if (maxWidth <= 0) {
+    return "";
+  }
+
+  if (getDisplayWidth(value) <= maxWidth) {
+    return value;
+  }
+
+  if (maxWidth <= 2) {
+    return value.slice(0, maxWidth);
+  }
+
+  let output = "";
+  let width = 0;
+  const ellipsisWidth = getDisplayWidth("…");
+
+  for (const char of value) {
+    const charWidth = getDisplayWidth(char);
+    if (width + charWidth + ellipsisWidth > maxWidth) {
+      break;
+    }
+
+    output += char;
+    width += charWidth;
+  }
+
+  return `${output}…`;
 }
 
 /**
@@ -497,7 +564,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         ...(refreshStatusText ? [`refresh=${refreshStatusText}`] : []),
         "",
         renderSectionHeader("help", rightWidth, styled),
-        "↑/↓ move    Space toggle    a app-auth    m model-route    c clear    r refresh    Enter/q exit"
+        ...renderInteractiveHelpLines(rightWidth)
       ];
       const leftLines = [
         ...accountLines,

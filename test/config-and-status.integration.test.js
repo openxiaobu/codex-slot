@@ -318,6 +318,12 @@ test("usage 兼容别名可用，并在 help 中展示", async () => {
   try {
     const { stdout: helpStdout } = await runCli(homeDir, ["--help"]);
     assert.match(helpStdout, /usage/);
+    assert.match(helpStdout, /中转命令 \/ Relay commands:/);
+    assert.match(helpStdout, /cslot relay add <name> --base-url <url> --api-key <key>/);
+    assert.match(helpStdout, /中文: 新增 OpenAI-compatible 中转槽位。/);
+    assert.match(helpStdout, /English: Add an OpenAI-compatible relay slot./);
+    assert.match(helpStdout, /cslot use auth/);
+    assert.match(helpStdout, /中文: 恢复使用官方 Codex 账号池。/);
 
     const { stdout, stderr } = await runCli(homeDir, ["usage", "--no-interactive"]);
 

@@ -6,6 +6,9 @@ const {
   renderStatusDetails,
   renderStatusTable
 } = require("../dist/status.js");
+const {
+  renderInteractiveHelpLines
+} = require("../dist/status-command.js");
 
 test("紧凑状态表只展示切换所需核心列，详情区补充 reset 与 email", () => {
   const statuses = [
@@ -165,4 +168,40 @@ test("relay 状态表展示启用状态和当前模型出口", () => {
   assert.match(details, /slot\s+third\*/);
   assert.match(details, /base\s+https:\/\/relay\.example\.com\/v1/);
   assert.doesNotMatch(details, /relay-secret/);
+});
+
+test("relay 状态表在超宽终端不撑满左侧面板", () => {
+  const slots = [
+    {
+      id: "third",
+      name: "third*",
+      base_url: "https://relay.example.com/openai-compatible/very/long/path/that/should/not/stretch/the/whole/status/panel/v1",
+      api_key: "relay-secret",
+      enabled: true
+    }
+  ];
+
+  const table = renderRelayStatusTable(slots, {
+    compact: true,
+    maxWidth: 180,
+    selectorColumn: {
+      enabledById: { third: true },
+      cursorRelayId: "third"
+    }
+  });
+
+  for (const line of table.split("\n")) {
+    assert.ok(line.length <= 112, line);
+  }
+});
+
+test("交互状态面板 help 在窄侧栏内逐行展示", () => {
+  const lines = renderInteractiveHelpLines(33);
+
+  assert.ok(lines.length > 3);
+  assert.match(lines.join("\n"), /m\s+model route/);
+
+  for (const line of lines) {
+    assert.ok(line.length <= 33, line);
+  }
 });
