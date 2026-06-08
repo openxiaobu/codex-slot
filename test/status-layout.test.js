@@ -7,6 +7,7 @@ const {
   renderStatusTable
 } = require("../dist/status.js");
 const {
+  renderInteractiveStatusLayout,
   renderInteractiveHelpLines
 } = require("../dist/status-command.js");
 
@@ -204,4 +205,32 @@ test("交互状态面板 help 在窄侧栏内逐行展示", () => {
   for (const line of lines) {
     assert.ok(line.length <= 33, line);
   }
+});
+
+test("交互状态面板按终端高度裁剪，避免重绘时滚屏破坏画布", () => {
+  const lines = renderInteractiveStatusLayout({
+    leftLines: ["accounts", "a1", "a2", "relays", "r1"],
+    sideLines: ["current", "summary", "help", "q exit"],
+    screenWidth: 80,
+    screenHeight: 6,
+    styled: false
+  });
+
+  assert.equal(lines.length, 5);
+  assert.deepEqual(lines, ["accounts", "a1", "a2", "relays", "r1"]);
+});
+
+test("交互状态面板宽屏双栏使用稳定左栏宽度", () => {
+  const lines = renderInteractiveStatusLayout({
+    leftLines: ["acct", "z"],
+    sideLines: ["current", "help"],
+    screenWidth: 120,
+    screenHeight: 20,
+    styled: false
+  });
+
+  const currentColumn = lines[0].indexOf("current");
+
+  assert.equal(currentColumn, 79);
+  assert.equal(lines[1].indexOf("help"), currentColumn);
 });

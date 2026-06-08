@@ -30,6 +30,14 @@ export interface StatusCommandOptions {
   interactive?: boolean;
 }
 
+export interface InteractiveStatusLayoutOptions {
+  leftLines: string[];
+  sideLines: string[];
+  screenWidth: number;
+  screenHeight?: number;
+  styled: boolean;
+}
+
 const ANSI = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
@@ -269,19 +277,69 @@ function truncateVisible(value: string, maxWidth: number): string {
  * @param leftLines 左栏文本行。
  * @param rightLines 右栏文本行。
  * @param gap 两栏之间的空格数量。
+ * @param leftWidth 左栏固定显示宽度；未传入时按左栏最长行自适应。
  * @returns 合并后的双栏文本行。
  * @throws 无显式抛出。
  */
-function renderColumns(leftLines: string[], rightLines: string[], gap: number): string[] {
-  const leftWidth = Math.max(0, ...leftLines.map((line) => getDisplayWidth(line)));
+function renderColumns(leftLines: string[], rightLines: string[], gap: number, leftWidth?: number): string[] {
+  const resolvedLeftWidth = leftWidth ?? Math.max(0, ...leftLines.map((line) => getDisplayWidth(line)));
   const rowCount = Math.max(leftLines.length, rightLines.length);
   const rows: string[] = [];
 
   for (let index = 0; index < rowCount; index += 1) {
-    rows.push(`${padVisible(leftLines[index] ?? "", leftWidth)}${" ".repeat(gap)}${rightLines[index] ?? ""}`.trimEnd());
+    rows.push(`${padVisible(leftLines[index] ?? "", resolvedLeftWidth)}${" ".repeat(gap)}${rightLines[index] ?? ""}`.trimEnd());
   }
 
   return rows;
+}
+
+/**
+ * 按终端高度裁剪交互式面板输出行，避免写到最后一行后继续换行触发滚屏。
+ *
+ * 业务含义：
+ * 1. 交互面板每次都从左上角整屏重绘。
+ * 2. 当输出行数超过当前终端高度时，终端会滚动备用屏缓冲区，后续重绘会出现残影或错位。
+ * 3. 保留最后一行作为安全缓冲，兼容不同终端对末行写入与换行的处理差异。
+ *
+ * @param lines 已完成布局的面板行。
+ * @param screenHeight 当前终端行数；为空或非法时不裁剪。
+ * @returns 可安全输出到当前终端的面板行。
+ * @throws 无显式抛出。
+ */
+function clipInteractiveLines(lines: string[], screenHeight: number | undefined): string[] {
+  if (screenHeight === undefined || !Number.isFinite(screenHeight) || screenHeight <= 1) {
+    return lines;
+  }
+
+  return lines.slice(0, Math.max(1, Math.floor(screenHeight) - 1));
+}
+
+/**
+ * 构建交互式状态面板的最终屏幕行。
+ *
+ * 业务含义：
+ * 1. 该方法只负责布局，不读取或写入 cslot 状态，便于用纯测试覆盖终端尺寸边界。
+ * 2. 宽屏时使用固定左栏宽度，让右侧详情栏在账号/relay 选择切换时保持稳定锚点。
+ * 3. 窄屏时改为上下布局，并按终端高度裁剪，避免上下移动触发重绘后滚屏。
+ *
+ * @param options 布局参数；`leftLines` 为账号与 relay 主列表，`sideLines` 为当前项、摘要与 help，`screenWidth`/`screenHeight` 来自当前终端尺寸，`styled` 控制分隔线样式。
+ * @returns 可直接传给终端输出函数的屏幕行。
+ * @throws 无显式抛出。
+ */
+export function renderInteractiveStatusLayout(options: InteractiveStatusLayoutOptions): string[] {
+  const screenWidth = Math.max(1, Math.floor(options.screenWidth));
+  const wideLayout = screenWidth >= 104;
+  const leftWidth = wideLayout ? Math.max(68, Math.floor(screenWidth * 0.64)) : screenWidth;
+  const lines = wideLayout
+    ? renderColumns(options.leftLines, options.sideLines, 3, leftWidth)
+    : [
+        ...options.leftLines,
+        "",
+        renderDivider(screenWidth, options.styled),
+        ...options.sideLines
+      ];
+
+  return clipInteractiveLines(lines, options.screenHeight);
 }
 
 /**
@@ -317,7 +375,6 @@ function renderInteractiveScreen(lines: string[]): void {
   readline.cursorTo(process.stdout, 0, 0);
   readline.clearScreenDown(process.stdout);
   process.stdout.write(lines.join("\n"));
-  process.stdout.write("\n");
 }
 
 /**
@@ -476,6 +533,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
 
     const render = () => {
       const screenWidth = process.stdout.columns ?? 80;
+      const screenHeight = process.stdout.rows;
       const styled = shouldUseAnsiStyle();
       const latestSnapshot = getStatusSnapshot();
       const items = buildInteractiveItems(accounts, relaySlots);
@@ -572,17 +630,13 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         ...relayLines
       ];
 
-      if (wideLayout) {
-        renderInteractiveScreen(renderColumns(leftLines, sideLines, 3));
-        return;
-      }
-
-      renderInteractiveScreen([
-        ...leftLines,
-        "",
-        renderDivider(screenWidth, styled),
-        ...sideLines
-      ]);
+      renderInteractiveScreen(renderInteractiveStatusLayout({
+        leftLines,
+        sideLines,
+        screenWidth,
+        screenHeight,
+        styled
+      }));
     };
 
     const applyChanges = () => {
@@ -610,6 +664,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
 
       applyChanges();
       stdin.off("keypress", onKeypress);
+      process.stdout.off("resize", onResize);
       stdin.setRawMode?.(false);
       stdin.pause();
       leaveInteractiveScreen();
@@ -760,8 +815,15 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
       }
     };
 
+    const onResize = () => {
+      if (!closed) {
+        render();
+      }
+    };
+
     render();
     stdin.on("keypress", onKeypress);
+    process.stdout.on("resize", onResize);
   });
 }
 
