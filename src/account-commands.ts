@@ -1,4 +1,5 @@
 import { importAccount, listAccounts, loginAccount, removeAccount, renameAccount } from "./app/account-service";
+import { findRelaySlot, removeRelaySlot, renameRelaySlot } from "./relay-store";
 import { bi } from "./text";
 
 /**
@@ -38,11 +39,19 @@ export async function handleAccountLogin(name: string): Promise<void> {
 export function handleAccountRemove(name: string): void {
   const removed = removeAccount(name);
 
-  if (!removed) {
-    throw new Error(bi(`未找到账号 ${name}`, `Account not found: ${name}`));
+  if (removed) {
+    console.log(bi(`已删除账号配置: ${removed.id}`, `Removed account config: ${removed.id}`));
+    return;
   }
 
-  console.log(bi(`已删除账号配置: ${removed.id}`, `Removed account config: ${removed.id}`));
+  const removedRelay = removeRelaySlot(name);
+
+  if (removedRelay) {
+    console.log(bi(`已删除中转槽位: ${removedRelay.name}`, `Relay slot removed: ${removedRelay.name}`));
+    return;
+  }
+
+  throw new Error(bi(`未找到账号或中转槽位 ${name}`, `Account or relay slot not found: ${name}`));
 }
 
 /**
@@ -92,6 +101,12 @@ export function handleAccountRemoveCommand(name?: string): void {
  * @throws 当旧槽位不存在、新槽位已存在或目录迁移失败时抛出异常。
  */
 export function handleAccountRename(oldName: string, newName: string): void {
+  if (!listAccounts().some((account) => account.id === oldName) && findRelaySlot(oldName)) {
+    const slot = renameRelaySlot(oldName, newName);
+    console.log(bi(`已重命名中转槽位: ${oldName} -> ${slot.name}`, `Relay slot renamed: ${oldName} -> ${slot.name}`));
+    return;
+  }
+
   const renamed = renameAccount(oldName, newName);
   console.log(bi(`已重命名账号: ${oldName} -> ${newName}`, `Renamed account: ${oldName} -> ${newName}`));
   console.log(bi(`当前目录: ${renamed.codex_home}`, `Current home: ${renamed.codex_home}`));
