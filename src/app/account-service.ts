@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { cloneCodexAuthState, registerManagedAccount, removeManagedAccount } from "../account-store";
 import { expandHome, getManagedHome, getUserHomeDir, loadConfig, saveConfig } from "../config";
 import { loginManagedAccount } from "../login";
+import { findRelaySlot, removeRelaySlot, renameRelaySlot } from "../relay-store";
 import { updateState } from "../state";
 import { bi } from "../text";
 import type { ManagedAccount } from "../types";
@@ -48,7 +49,13 @@ export async function loginAccount(slotName: string): Promise<string> {
  * @throws 无显式抛出。
  */
 export function removeAccount(slotName: string): ManagedAccount | null {
-  return removeManagedAccount(slotName);
+  const removed = removeManagedAccount(slotName);
+
+  if (removed) {
+    removeRelaySlot(slotName);
+  }
+
+  return removed;
 }
 
 /**
@@ -75,6 +82,10 @@ export function listAccounts(): ManagedAccount[] {
  * @throws 当旧槽位不存在、新槽位已存在或目录迁移失败时抛出异常。
  */
 export function renameAccount(oldName: string, newName: string): ManagedAccount {
+  if (findRelaySlot(oldName) && findRelaySlot(newName)) {
+    throw new Error(bi(`中转槽位 ${newName} 已存在`, `Relay slot already exists: ${newName}`));
+  }
+
   const config = loadConfig();
   const index = config.accounts.findIndex((item) => item.id === oldName);
 
@@ -130,6 +141,10 @@ export function renameAccount(oldName: string, newName: string): ManagedAccount 
       delete state.scheduler_stats[oldName];
     }
   });
+
+  if (findRelaySlot(oldName)) {
+    renameRelaySlot(oldName, newName);
+  }
 
   return renamedAccount;
 }

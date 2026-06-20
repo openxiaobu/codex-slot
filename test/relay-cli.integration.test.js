@@ -80,3 +80,137 @@ test("relay CLI 可以添加、列出、选择和恢复官方账号池", async (
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
+
+test("账号 del 会同步删除同名 relay 槽位并恢复官方账号池", async () => {
+  const homeDir = createIsolatedHome();
+  const cslotDir = path.join(homeDir, ".cslot");
+  const configPath = path.join(cslotDir, "config.yaml");
+  const statePath = path.join(cslotDir, "state.json");
+
+  fs.mkdirSync(path.join(cslotDir, "homes", "work"), { recursive: true });
+  fs.writeFileSync(
+    configPath,
+    YAML.stringify({
+      version: 1,
+      accounts: [
+        {
+          id: "work",
+          name: "work",
+          codex_home: path.join(cslotDir, "homes", "work"),
+          enabled: true
+        }
+      ],
+      relay_slots: [
+        {
+          id: "work",
+          name: "work",
+          base_url: "https://relay.example.com/v1",
+          api_key: "relay-secret",
+          enabled: true
+        }
+      ]
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    statePath,
+    JSON.stringify(
+      {
+        selected_model_route: {
+          mode: "relay_slot",
+          relay_slot_id: "work"
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  try {
+    await runCli(homeDir, ["del", "work"]);
+
+    const config = YAML.parse(fs.readFileSync(configPath, "utf8"));
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+
+    assert.deepEqual(config.accounts, []);
+    assert.deepEqual(config.relay_slots, []);
+    assert.deepEqual(state.selected_model_route, {
+      mode: "auth_pool"
+    });
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("账号 rename 会同步重命名同名 relay 槽位并迁移当前模型出口", async () => {
+  const homeDir = createIsolatedHome();
+  const cslotDir = path.join(homeDir, ".cslot");
+  const configPath = path.join(cslotDir, "config.yaml");
+  const statePath = path.join(cslotDir, "state.json");
+
+  fs.mkdirSync(path.join(cslotDir, "homes", "work"), { recursive: true });
+  fs.writeFileSync(
+    configPath,
+    YAML.stringify({
+      version: 1,
+      accounts: [
+        {
+          id: "work",
+          name: "work",
+          codex_home: path.join(cslotDir, "homes", "work"),
+          enabled: true
+        }
+      ],
+      relay_slots: [
+        {
+          id: "work",
+          name: "work",
+          base_url: "https://relay.example.com/v1",
+          api_key: "relay-secret",
+          enabled: true
+        }
+      ]
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    statePath,
+    JSON.stringify(
+      {
+        account_blocks: {},
+        usage_cache: {},
+        usage_refresh_errors: {},
+        scheduler_stats: {},
+        managed_codex_auth: null,
+        managed_codex_config: null,
+        selected_model_route: {
+          mode: "relay_slot",
+          relay_slot_id: "work"
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  try {
+    await runCli(homeDir, ["rename", "work", "main"]);
+
+    const config = YAML.parse(fs.readFileSync(configPath, "utf8"));
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+
+    assert.equal(config.accounts[0].id, "main");
+    assert.equal(config.accounts[0].name, "main");
+    assert.equal(config.relay_slots[0].id, "main");
+    assert.equal(config.relay_slots[0].name, "main");
+    assert.equal(config.relay_slots[0].api_key, "relay-secret");
+    assert.deepEqual(state.selected_model_route, {
+      mode: "relay_slot",
+      relay_slot_id: "main"
+    });
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
