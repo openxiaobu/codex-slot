@@ -2,7 +2,7 @@ import { startManagedService, stopManagedService } from "./app/service-lifecycle
 import { loadConfig } from "./config";
 import { bi } from "./text";
 
-function describeServiceManager(manager: "launchd" | "systemd-user" | "schtasks" | "detached"): string {
+function describeServiceManager(manager: "launchd" | "systemd-user" | "schtasks" | "win-startup" | "detached"): string {
   switch (manager) {
     case "launchd":
       return bi("launchd（开机自启 + 异常自动拉起）", "launchd (auto-start on boot + auto-restart on failure)");
@@ -10,6 +10,8 @@ function describeServiceManager(manager: "launchd" | "systemd-user" | "schtasks"
       return bi("systemd --user（开机自启 + 异常自动拉起）", "systemd --user (auto-start on boot + auto-restart on failure)");
     case "schtasks":
       return bi("Windows 计划任务（登录自启 + 异常自动拉起）", "Windows Task Scheduler (auto-start on logon + auto-restart on failure)");
+    case "win-startup":
+      return bi("Windows 启动文件夹（登录自启）", "Windows Startup folder (auto-start on logon)");
     default:
       return bi("detached 进程（仅本次后台运行，不保证自动拉起）", "detached process (background only, no guaranteed auto-restart)");
   }

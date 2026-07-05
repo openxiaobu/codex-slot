@@ -17,7 +17,7 @@ const STARTUP_POLL_INTERVAL_MS = 100;
 const STARTUP_TIMEOUT_MS = 5000;
 const LAUNCH_AGENT_LABEL_PREFIX = "com.openxiaobu.cslot";
 
-export type ServiceManagerKind = "launchd" | "systemd-user" | "schtasks" | "detached";
+export type ServiceManagerKind = "launchd" | "systemd-user" | "schtasks" | "win-startup" | "detached";
 
 /**
  * 休眠指定毫秒数，供启动轮询流程复用。
@@ -202,6 +202,16 @@ function shouldUseSchtasks(): boolean {
   return process.platform === "win32" && process.env.CSLOT_DISABLE_SCHTASKS !== "1";
 }
 
+/**
+ * 判断当前 Windows 环境是否应使用「启动」文件夹托管。
+ *
+ * @returns Windows 且未显式禁用启动文件夹托管时返回 `true`，否则返回 `false`。
+ * @throws 无显式抛出。
+ */
+function shouldUseWindowsStartup(): boolean {
+  return process.platform === "win32" && process.env.CSLOT_DISABLE_WIN_STARTUP !== "1";
+}
+
 let schtasksAvailability: boolean | null = null;
 
 /**
@@ -285,6 +295,10 @@ export function resolveServiceManagerKind(): ServiceManagerKind {
     if (canUseSchtasks()) {
       return "schtasks";
     }
+  }
+
+  if (shouldUseWindowsStartup()) {
+    return "win-startup";
   }
 
   return "detached";
@@ -579,6 +593,135 @@ function stopManagedServiceWithSchtasks(): number | null {
 }
 
 /**
+ * 返回当前用户的 Windows「启动」文件夹路径。
+ *
+ * @returns Startup 目录绝对路径。
+ * @throws 无显式抛出。
+ */
+function getWindowsStartupFolder(): string {
+  const appData = process.env.APPDATA || path.join(getUserHomeDir(), "AppData", "Roaming");
+  return path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+}
+
+/**
+ * 返回写入 Startup 文件夹的 cslot 启动脚本路径。
+ *
+ * @returns 启动脚本绝对路径。
+ * @throws 无显式抛出。
+ */
+function getWindowsStartupEntryPath(): string {
+  return path.join(getWindowsStartupFolder(), `${getLaunchAgentLabel()}.cmd`);
+}
+
+/**
+ * 生成 Windows 登录启动脚本，在计划任务不可用时作为回退自启方案。
+ *
+ * @param command 启动服务使用的绝对命令路径。
+ * @param args 命令参数列表。
+ * @param logPath 服务日志路径。
+ * @returns 可直接写入 `.cmd` 的批处理文本。
+ * @throws 无显式抛出。
+ */
+export function buildWindowsStartupScript(command: string, args: string[], logPath: string): string {
+  const home = getUserHomeDir();
+  const pidPath = getPidPath();
+  const quotedArgs = args.map((item) => `"${item.replaceAll("\"", "\\\"")}"`).join(" ");
+  const escapedCommand = command.replaceAll("\"", "\\\"");
+  const escapedLogPath = logPath.replaceAll("\"", "\\\"");
+  const escapedHome = home.replaceAll("\"", "\\\"");
+  const escapedPidPath = pidPath.replaceAll("\"", "\\\"");
+
+  return [
+    "@echo off",
+    "setlocal",
+    `set "HOME=${escapedHome}"`,
+    `set "USERPROFILE=${escapedHome}"`,
+    `if exist "${escapedPidPath}" (`,
+    `  for /f "usebackq delims=" %%p in ("${escapedPidPath}") do (`,
+    `    tasklist /FI "PID eq %%p" 2>nul | find "%%p" >nul && exit /b 0`,
+    "  )",
+    ")",
+    `start /B "" "${escapedCommand}" ${quotedArgs} >> "${escapedLogPath}" 2>&1`,
+    ""
+  ].join("\r\n");
+}
+
+/**
+ * 将登录启动脚本写入 Windows「启动」文件夹。
+ *
+ * @param port 最终启动端口。
+ * @returns 无返回值。
+ * @throws 当脚本写入失败时抛出文件系统错误。
+ */
+function installWindowsStartupEntry(port: number): void {
+  const serveEntrypoint = resolveServeEntrypoint();
+  const logPath = getServiceLogPath();
+  const script = buildWindowsStartupScript(
+    serveEntrypoint.command,
+    [...serveEntrypoint.args, "--port", String(port)],
+    logPath
+  );
+  const startupDir = getWindowsStartupFolder();
+
+  fs.mkdirSync(startupDir, { recursive: true });
+  fs.writeFileSync(getWindowsStartupEntryPath(), script, "utf8");
+}
+
+/**
+ * 移除 Windows「启动」文件夹中的 cslot 启动脚本。
+ *
+ * @returns 无返回值。
+ * @throws 无显式抛出。
+ */
+function uninstallWindowsStartupEntry(): void {
+  fs.rmSync(getWindowsStartupEntryPath(), { force: true });
+}
+
+/**
+ * 判断当前 HOME 是否已安装 Windows 登录启动脚本。
+ *
+ * @returns 启动脚本存在时返回 `true`，否则返回 `false`。
+ * @throws 无显式抛出。
+ */
+function hasWindowsStartupEntry(): boolean {
+  return fs.existsSync(getWindowsStartupEntryPath());
+}
+
+/**
+ * 启动 detached 服务并注册 Windows「启动」文件夹登录自启。
+ *
+ * @param port 最终启动端口。
+ * @param logPath 服务日志路径。
+ * @returns 子进程 PID。
+ * @throws 当服务启动或启动项写入失败时抛出异常。
+ */
+function startManagedServiceWithWindowsStartup(port: number, logPath: string): number {
+  const childPid = startDetachedManagedService(port, logPath);
+  installWindowsStartupEntry(port);
+  return childPid;
+}
+
+/**
+ * 停止 detached 服务并移除 Windows 登录启动脚本。
+ *
+ * @returns 停止前记录到的 PID；若当时没有可见运行 PID 则返回 `null`。
+ * @throws 当进程终止失败时抛出异常。
+ */
+function stopManagedServiceWithWindowsStartup(): number | null {
+  const pid = getRunningPid();
+
+  uninstallWindowsStartupEntry();
+
+  if (pid && isProcessRunning(pid)) {
+    terminateProcess(pid);
+  }
+
+  fs.rmSync(getPidPath(), { force: true });
+
+  return pid;
+}
+
+/**
  * 执行一次 systemctl --user 命令，并在允许的退出码范围内按幂等成功处理。
  *
  * @param args systemctl 参数列表。
@@ -862,6 +1005,8 @@ function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<type
       stopManagedServiceWithSystemdUser();
     } else if (manager === "schtasks") {
       stopManagedServiceWithSchtasks();
+    } else if (manager === "win-startup") {
+      stopManagedServiceWithWindowsStartup();
     }
   } catch {
     // 回滚阶段以尽力清理为主，不覆盖原始启动异常。
@@ -1017,6 +1162,10 @@ export async function startManagedService(portOverride?: string): Promise<{
   const runningPid = getRunningPid();
 
   if (runningPid) {
+    if (manager === "win-startup" && !hasWindowsStartupEntry()) {
+      installWindowsStartupEntry(config.server.port);
+    }
+
     return {
       alreadyRunning: true,
       pid: runningPid,
@@ -1066,12 +1215,19 @@ export async function startManagedService(portOverride?: string): Promise<{
       }
 
       try {
-        childPid = startDetachedManagedService(port, logPath);
-        actualManager = "detached";
+        childPid = startManagedServiceWithWindowsStartup(port, logPath);
+        actualManager = "win-startup";
       } catch (fallbackError) {
         rollbackFailedStart(null, previousConfig);
         throw fallbackError;
       }
+    }
+  } else if (manager === "win-startup") {
+    try {
+      childPid = startManagedServiceWithWindowsStartup(port, logPath);
+    } catch (error) {
+      rollbackFailedStart(null, previousConfig);
+      throw error;
     }
   } else {
     try {
@@ -1111,9 +1267,10 @@ export function stopManagedService(): { stoppedPid: number | null } {
   const hasSystemdUnit = manager === "systemd-user" && fs.existsSync(getSystemdUserUnitPath());
   const hasSchtasksTask =
     manager === "schtasks" && (fs.existsSync(getSchtasksXmlPath()) || isSchtasksTaskRegistered());
+  const hasWindowsStartup = hasWindowsStartupEntry();
   const pid = getRunningPid();
 
-  if (!pid && !hasLaunchAgent && !hasSystemdUnit && !hasSchtasksTask) {
+  if (!pid && !hasLaunchAgent && !hasSystemdUnit && !hasSchtasksTask && !hasWindowsStartup) {
     deactivateManagedCodexConfig();
     deactivateManagedCodexAuth();
     return { stoppedPid: null };
@@ -1125,6 +1282,8 @@ export function stopManagedService(): { stoppedPid: number | null } {
     stopManagedServiceWithSystemdUser();
   } else if (hasSchtasksTask) {
     stopManagedServiceWithSchtasks();
+  } else if (hasWindowsStartup) {
+    stopManagedServiceWithWindowsStartup();
   } else if (pid) {
     terminateProcess(pid);
     fs.rmSync(getPidPath(), { force: true });

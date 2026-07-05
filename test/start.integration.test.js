@@ -32,7 +32,8 @@ function createCliEnv(homeDir) {
   return {
     ...process.env,
     HOME: homeDir,
-    USERPROFILE: homeDir
+    USERPROFILE: homeDir,
+    APPDATA: path.join(homeDir, "AppData", "Roaming")
   };
 }
 
@@ -410,6 +411,14 @@ test("默认启动会把实际端口同步到单一 provider 配置", async () =
         assert.match(xml, /<RestartOnFailure>/);
       }
     }
+
+    if (process.platform === "win32" && process.env.CSLOT_DISABLE_WIN_STARTUP !== "1") {
+      const startupDir = path.join(homeDir, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+      const startupScripts = fs.existsSync(startupDir)
+        ? fs.readdirSync(startupDir).filter((fileName) => fileName.startsWith("com.openxiaobu.cslot.") && fileName.endsWith(".cmd"))
+        : [];
+      assert.equal(startupScripts.length, 1);
+    }
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
 
@@ -419,6 +428,14 @@ test("默认启动会把实际端口同步到单一 provider 配置", async () =
 
     if (process.platform === "win32" && process.env.CSLOT_DISABLE_SCHTASKS !== "1") {
       assert.equal(fs.existsSync(path.join(homeDir, ".cslot", "schtasks.xml")), false);
+    }
+
+    if (process.platform === "win32" && process.env.CSLOT_DISABLE_WIN_STARTUP !== "1") {
+      const startupDir = path.join(homeDir, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+      if (fs.existsSync(startupDir)) {
+        const startupScripts = fs.readdirSync(startupDir).filter((fileName) => fileName.startsWith("com.openxiaobu.cslot.") && fileName.endsWith(".cmd"));
+        assert.equal(startupScripts.length, 0);
+      }
     }
 
     fs.rmSync(homeDir, { recursive: true, force: true });

@@ -6,7 +6,8 @@ const test = require("node:test");
 const {
   buildLaunchAgentPlist,
   buildSchtasksTaskXml,
-  buildSystemdUserUnit
+  buildSystemdUserUnit,
+  buildWindowsStartupScript
 } = require("../dist/app/service-lifecycle-service.js");
 
 test("launchd plist 包含自动拉起与开机启动配置", () => {
@@ -39,4 +40,14 @@ test("schtasks XML 包含登录自启与失败重启配置", () => {
   assert.match(xml, /<Command>cmd\.exe<\/Command>/);
   assert.match(xml, /USERPROFILE=/);
   assert.match(xml, /service\.log/);
+});
+
+test("Windows 启动脚本包含登录自启与 PID 去重逻辑", () => {
+  const script = buildWindowsStartupScript("C:\\\\Program Files\\\\nodejs\\\\node.exe", ["C:\\\\Users\\\\demo\\\\serve.js", "--port", "4399"], "C:\\\\Users\\\\demo\\\\.cslot\\\\logs\\\\service.log");
+
+  assert.match(script, /set "USERPROFILE=/);
+  assert.match(script, /set "HOME=/);
+  assert.match(script, /tasklist \/FI "PID eq %%p"/);
+  assert.match(script, /start \/B/);
+  assert.match(script, /serve\.js/);
 });
