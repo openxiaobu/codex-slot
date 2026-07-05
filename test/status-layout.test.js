@@ -4,7 +4,8 @@ const {
   renderRelayStatusDetails,
   renderRelayStatusTable,
   renderStatusDetails,
-  renderStatusTable
+  renderStatusTable,
+  summarizeAccountStatuses
 } = require("../dist/status.js");
 const {
   renderInteractiveStatusLayout,
@@ -233,4 +234,40 @@ test("交互状态面板宽屏双栏使用稳定左栏宽度", () => {
 
   assert.equal(currentColumn, 79);
   assert.equal(lines[1].indexOf("help"), currentColumn);
+});
+
+test("本地 5h 熔断时状态表展示 0% 剩余并计入摘要", () => {
+  const nowSec = Math.floor(Date.now() / 1000) + 3600;
+  const statuses = [
+    {
+      id: "yuan20x",
+      name: "yuan20x@",
+      email: "since.20.purah@gmail.com",
+      enabled: true,
+      exists: true,
+      plan: "pro",
+      fiveHourLeftPercent: 0,
+      fiveHourResetsAt: nowSec,
+      weeklyLeftPercent: 39,
+      weeklyResetsAt: nowSec + 1000,
+      isFiveHourLimited: true,
+      isWeeklyLimited: false,
+      localBlockReason: "5h_limited",
+      localBlockUntil: nowSec,
+      refreshErrorCode: null,
+      refreshErrorMessage: null,
+      isAvailable: false,
+      sourcePath: "/tmp/yuan20x"
+    }
+  ];
+
+  const table = renderStatusTable(statuses);
+  const summary = summarizeAccountStatuses(statuses);
+
+  assert.match(table, /5H剩余/);
+  assert.match(table, /0%/);
+  assert.match(table, /5h_limited/);
+  assert.equal(summary.available, 0);
+  assert.equal(summary.fiveHourLimited, 1);
+  assert.equal(summary.weeklyLimited, 0);
 });

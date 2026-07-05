@@ -3,6 +3,7 @@ import {
   hasCompleteCodexAuthState,
   resolvePrimaryRegistryAccount
 } from "./account-store";
+import { resolveEffectiveQuotaStatus } from "./quota-status";
 import { getAccountBlock, getUsageCache, getUsageRefreshError } from "./state";
 import { formatLocalDateTime } from "./text";
 import type { AccountRuntimeStatus, RelaySlot } from "./types";
@@ -41,26 +42,6 @@ const TABLE_ANSI = {
   red: "\x1b[31m",
   cyan: "\x1b[36m"
 } as const;
-
-function computeLeftPercent(usedPercent: number | null | undefined): number | null {
-  if (usedPercent === null || usedPercent === undefined || Number.isNaN(usedPercent)) {
-    return null;
-  }
-
-  return Math.max(0, Math.min(100, 100 - usedPercent));
-}
-
-function isLimited(usedPercent: number | null, resetsAt: number | null): boolean {
-  if (usedPercent === null || usedPercent < 100) {
-    return false;
-  }
-
-  if (!resetsAt) {
-    return true;
-  }
-
-  return resetsAt * 1000 > Date.now();
-}
 
 function formatPercent(value: number | null): string {
   return value === null ? "-" : `${value}%`;
@@ -515,12 +496,21 @@ export function collectAccountStatuses(): AccountRuntimeStatus[] {
     const fiveHourReset = usageCache?.fiveHourResetAt ?? null;
     const weeklyUsed = usageCache?.weeklyUsedPercent ?? null;
     const weeklyReset = usageCache?.weeklyResetAt ?? null;
-    const fiveHourLeftPercent = computeLeftPercent(fiveHourUsed);
-    const weeklyLeftPercent = computeLeftPercent(weeklyUsed);
-    const isFiveHourLimited = isLimited(fiveHourUsed, fiveHourReset);
-    const isWeeklyLimited = isLimited(weeklyUsed, weeklyReset);
     const localBlock = getAccountBlock(account.id);
-    const localBlocked = localBlock?.until != null ? localBlock.until * 1000 > Date.now() : false;
+    const quotaStatus = resolveEffectiveQuotaStatus(
+      fiveHourUsed,
+      fiveHourReset,
+      weeklyUsed,
+      weeklyReset,
+      localBlock
+    );
+    const {
+      fiveHourLeftPercent,
+      weeklyLeftPercent,
+      isFiveHourLimited,
+      isWeeklyLimited,
+      localBlocked
+    } = quotaStatus;
     const refreshErrorCode = workspace.workspaceErrorCode ?? refreshError?.code ?? null;
     const refreshErrorMessage =
       workspace.workspaceErrorMessage ?? refreshError?.message ?? null;
@@ -612,10 +602,10 @@ export function renderStatusTable(
           "NAME",
           "EMAIL",
           "PLAN",
-          "5H_LEFT",
-          "5H_RESET",
-          "WEEK_LEFT",
-          "WEEK_RESET",
+          "5H剩余",
+          "5H重置",
+          "周剩余",
+          "周重置",
           "STATUS"
         ]
   ];

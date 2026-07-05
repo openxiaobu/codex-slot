@@ -6,6 +6,7 @@ import {
   writeAuthFile
 } from "./account-store";
 import { loadConfig } from "./config";
+import { reconcileQuotaBlockAfterUsageRefresh } from "./quota-status";
 import {
   clearAccountBlock,
   getAccountBlock,
@@ -244,6 +245,7 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
   setUsageCache(result);
   clearUsageRefreshError(accountId);
   clearShortLivedAccountBlock(accountId);
+  reconcileQuotaBlockAfterUsageRefresh(accountId, result);
   return result;
 }
 
