@@ -31,7 +31,8 @@ function createIsolatedHome() {
 function createCliEnv(homeDir) {
   return {
     ...process.env,
-    HOME: homeDir
+    HOME: homeDir,
+    USERPROFILE: homeDir
   };
 }
 
@@ -400,11 +401,24 @@ test("默认启动会把实际端口同步到单一 provider 配置", async () =
       assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
       assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
     }
+
+    if (process.platform === "win32" && process.env.CSLOT_DISABLE_SCHTASKS !== "1") {
+      const schtasksXmlPath = path.join(homeDir, ".cslot", "schtasks.xml");
+      if (fs.existsSync(schtasksXmlPath)) {
+        const xml = fs.readFileSync(schtasksXmlPath, "utf16le");
+        assert.match(xml, /<LogonTrigger>/);
+        assert.match(xml, /<RestartOnFailure>/);
+      }
+    }
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
 
     if (process.platform === "darwin" && process.env.CSLOT_DISABLE_LAUNCHD !== "1") {
       assert.equal(listLaunchAgentPlists(homeDir).length, 0);
+    }
+
+    if (process.platform === "win32" && process.env.CSLOT_DISABLE_SCHTASKS !== "1") {
+      assert.equal(fs.existsSync(path.join(homeDir, ".cslot", "schtasks.xml")), false);
     }
 
     fs.rmSync(homeDir, { recursive: true, force: true });

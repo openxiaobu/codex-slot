@@ -9,14 +9,15 @@ import { getSelectedCodexAuthAccountId } from "../state";
 import { applyManagedCodexConfig, deactivateManagedCodexConfig } from "../codex-config";
 import { applyManagedCodexAuth, deactivateManagedCodexAuth } from "../codex-auth";
 import { parsePort } from "../cli-helpers";
-import { getPidPath, getServiceLogPath, getUserHomeDir, loadConfig, saveConfig } from "../config";
+import { getCslotHome, getPidPath, getServiceLogPath, getUserHomeDir, loadConfig, saveConfig } from "../config";
+import { isProcessRunning, terminateProcess } from "../process-utils";
 import type { ManagedAccount } from "../types";
 
 const STARTUP_POLL_INTERVAL_MS = 100;
 const STARTUP_TIMEOUT_MS = 5000;
 const LAUNCH_AGENT_LABEL_PREFIX = "com.openxiaobu.cslot";
 
-export type ServiceManagerKind = "launchd" | "systemd-user" | "detached";
+export type ServiceManagerKind = "launchd" | "systemd-user" | "schtasks" | "detached";
 
 /**
  * 休眠指定毫秒数，供启动轮询流程复用。
@@ -50,13 +51,12 @@ export function getRunningPid(): number | null {
     return null;
   }
 
-  try {
-    process.kill(pid, 0);
+  if (isProcessRunning(pid)) {
     return pid;
-  } catch {
-    fs.rmSync(pidPath, { force: true });
-    return null;
   }
+
+  fs.rmSync(pidPath, { force: true });
+  return null;
 }
 
 /**
@@ -193,6 +193,72 @@ function shouldUseSystemdUser(): boolean {
 }
 
 /**
+ * 判断当前 Windows 环境是否应使用计划任务托管。
+ *
+ * @returns Windows 且未显式禁用 schtasks 托管时返回 `true`，否则返回 `false`。
+ * @throws 无显式抛出。
+ */
+function shouldUseSchtasks(): boolean {
+  return process.platform === "win32" && process.env.CSLOT_DISABLE_SCHTASKS !== "1";
+}
+
+let schtasksAvailability: boolean | null = null;
+
+/**
+ * 探测当前 Windows 用户是否真的可以创建计划任务。
+ *
+ * 某些企业环境会禁用 schtasks 写入，此时应回退到 detached 模式而不是直接失败。
+ *
+ * @returns 可创建计划任务时返回 `true`，否则返回 `false`。
+ * @throws 无显式抛出。
+ */
+function canUseSchtasks(): boolean {
+  if (!shouldUseSchtasks()) {
+    return false;
+  }
+
+  if (schtasksAvailability !== null) {
+    return schtasksAvailability;
+  }
+
+  try {
+    execFileSync("schtasks", ["/Query", "/FO", "LIST"], {
+      stdio: ["ignore", "ignore", "ignore"]
+    });
+  } catch {
+    schtasksAvailability = false;
+    return false;
+  }
+
+  const probeTaskName = `${getLaunchAgentLabel()}.probe`;
+  try {
+    runSchtasks(["/Create", "/TN", probeTaskName, "/TR", "cmd.exe /c exit 0", "/SC", "ONLOGON", "/F"]);
+    runSchtasks(["/Delete", "/TN", probeTaskName, "/F"]);
+    schtasksAvailability = true;
+  } catch {
+    schtasksAvailability = false;
+  }
+
+  return schtasksAvailability;
+}
+
+/**
+ * 为后台服务子进程补齐 HOME/USERPROFILE，避免 Windows 下配置与 PID 文件写到错误目录。
+ *
+ * @returns 可直接传给 `spawn` 的环境变量对象。
+ * @throws 无显式抛出。
+ */
+function createServiceSpawnEnv(): NodeJS.ProcessEnv {
+  const home = getUserHomeDir();
+
+  return {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home
+  };
+}
+
+/**
  * 解析当前平台应使用的后台服务托管方式。
  *
  * @returns 当前平台对应的服务管理器类型。
@@ -213,6 +279,12 @@ export function resolveServiceManagerKind(): ServiceManagerKind {
     }
 
     return "systemd-user";
+  }
+
+  if (shouldUseSchtasks()) {
+    if (canUseSchtasks()) {
+      return "schtasks";
+    }
   }
 
   return "detached";
@@ -309,6 +381,201 @@ export function buildSystemdUserUnit(command: string, args: string[], logPath: s
     "WantedBy=default.target",
     ""
   ].join("\n");
+}
+
+/**
+ * 返回 Windows 计划任务名称，按 HOME 做稳定区分，避免测试与真实环境互串。
+ *
+ * @returns 当前 HOME 对应的 schtasks 任务名。
+ * @throws 无显式抛出。
+ */
+function getSchtasksTaskName(): string {
+  return getLaunchAgentLabel();
+}
+
+/**
+ * 返回 Windows 计划任务 XML 文件路径。
+ *
+ * @returns schtasks XML 绝对路径。
+ * @throws 无显式抛出。
+ */
+function getSchtasksXmlPath(): string {
+  return path.join(getCslotHome(), "schtasks.xml");
+}
+
+/**
+ * 生成 schtasks `/TR` 使用的命令行，补齐 HOME 并重定向日志。
+ *
+ * @param command 启动服务使用的绝对命令路径。
+ * @param args 命令参数列表。
+ * @param logPath 服务日志路径。
+ * @returns 可直接传给 schtasks `/TR` 的命令文本。
+ * @throws 无显式抛出。
+ */
+function buildSchtasksCommandLine(command: string, args: string[], logPath: string): string {
+  const home = getUserHomeDir();
+  const quotedArgs = args.map((item) => `"${item.replaceAll("\"", "\\\"")}"`).join(" ");
+  const escapedLogPath = logPath.replaceAll("\"", "\\\"");
+
+  return `cmd.exe /c set "USERPROFILE=${home}" && set "HOME=${home}" && "${command.replaceAll("\"", "\\\"")}" ${quotedArgs} >> "${escapedLogPath}" 2>&1`;
+}
+
+/**
+ * 生成 Windows 计划任务 XML，使 cslot 在登录时自启并在异常退出后自动重启。
+ *
+ * @param command 启动服务使用的绝对命令路径。
+ * @param args 命令参数列表。
+ * @param logPath 服务日志路径。
+ * @returns 可直接写入 schtasks 的 XML 文本（UTF-16 写入前仍需自行编码）。
+ * @throws 无显式抛出。
+ */
+export function buildSchtasksTaskXml(command: string, args: string[], logPath: string): string {
+  const home = escapeXml(getUserHomeDir());
+  const execArguments = escapeXml(
+    `/c set "USERPROFILE=${getUserHomeDir()}" && set "HOME=${getUserHomeDir()}" && "${command}" ${args.map((item) => `"${item.replaceAll("\"", "\\\"")}"`).join(" ")} >> "${logPath.replaceAll("\"", "\\\"")}" 2>&1`
+  );
+
+  return [
+    "<?xml version=\"1.0\" encoding=\"UTF-16\"?>",
+    "<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">",
+    "  <RegistrationInfo>",
+    "    <Description>cslot managed local proxy</Description>",
+    "  </RegistrationInfo>",
+    "  <Triggers>",
+    "    <LogonTrigger>",
+    "      <Enabled>true</Enabled>",
+    "    </LogonTrigger>",
+    "  </Triggers>",
+    "  <Principals>",
+    "    <Principal id=\"Author\">",
+    "      <LogonType>InteractiveToken</LogonType>",
+    "      <RunLevel>LeastPrivilege</RunLevel>",
+    "    </Principal>",
+    "  </Principals>",
+    "  <Settings>",
+    "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+    "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+    "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+    "    <AllowHardTerminate>true</AllowHardTerminate>",
+    "    <StartWhenAvailable>true</StartWhenAvailable>",
+    "    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>",
+    "    <RestartOnFailure>",
+    "      <Interval>PT1M</Interval>",
+    "      <Count>999</Count>",
+    "    </RestartOnFailure>",
+    "    <Enabled>true</Enabled>",
+    "  </Settings>",
+    "  <Actions Context=\"Author\">",
+    "    <Exec>",
+    "      <Command>cmd.exe</Command>",
+    `      <Arguments>${execArguments}</Arguments>`,
+    `      <WorkingDirectory>${home}</WorkingDirectory>`,
+    "    </Exec>",
+    "  </Actions>",
+    "</Task>",
+    ""
+  ].join("\n");
+}
+
+/**
+ * 执行一次 schtasks 命令，并在允许的退出码范围内按幂等成功处理。
+ *
+ * @param args schtasks 参数列表。
+ * @param allowedStatuses 允许按成功处理的退出码集合。
+ * @returns 标准输出文本。
+ * @throws 当命令失败且退出码不在允许列表中时抛出异常。
+ */
+function runSchtasks(args: string[], allowedStatuses: number[] = []): string {
+  try {
+    return execFileSync("schtasks", args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    const status = typeof error === "object" && error && "status" in error ? Number(error.status) : null;
+
+    if (status !== null && allowedStatuses.includes(status)) {
+      return "";
+    }
+
+    const stderr =
+      typeof error === "object" && error && "stderr" in error && typeof error.stderr === "string"
+        ? error.stderr.trim()
+        : "";
+    const message = stderr || (error instanceof Error ? error.message : String(error));
+    throw new Error(`schtasks ${args.join(" ")} 失败: ${message}`);
+  }
+}
+
+/**
+ * 判断当前 HOME 对应的 schtasks 任务是否已经注册。
+ *
+ * @returns 任务存在时返回 `true`，否则返回 `false`。
+ * @throws 无显式抛出。
+ */
+function isSchtasksTaskRegistered(): boolean {
+  try {
+    runSchtasks(["/Query", "/TN", getSchtasksTaskName()]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 启动或重载 schtasks 托管的 cslot 服务。
+ *
+ * @param port 最终启动端口。
+ * @param logPath 服务日志路径。
+ * @returns 当前 schtasks 托管实例的 PID。
+ * @throws 当 XML 写入、schtasks 调用或服务就绪检查失败时抛出异常。
+ */
+async function startManagedServiceWithSchtasks(port: number, logPath: string): Promise<number> {
+  const serveEntrypoint = resolveServeEntrypoint();
+  const taskName = getSchtasksTaskName();
+  const xmlPath = getSchtasksXmlPath();
+  const serveArgs = [...serveEntrypoint.args, "--port", String(port)];
+  const taskCommand = buildSchtasksCommandLine(serveEntrypoint.command, serveArgs, logPath);
+  const xml = buildSchtasksTaskXml(serveEntrypoint.command, serveArgs, logPath);
+
+  fs.writeFileSync(xmlPath, Buffer.from(`\ufeff${xml}`, "utf16le"));
+  runSchtasks(["/End", "/TN", taskName], [1]);
+  runSchtasks(["/Delete", "/TN", taskName], [1]);
+
+  try {
+    runSchtasks(["/Create", "/TN", taskName, "/XML", xmlPath, "/F"]);
+  } catch {
+    fs.rmSync(xmlPath, { force: true });
+    runSchtasks(["/Create", "/TN", taskName, "/TR", taskCommand, "/SC", "ONLOGON", "/F"]);
+  }
+
+  runSchtasks(["/Run", "/TN", taskName]);
+
+  return await waitForManagedServicePid();
+}
+
+/**
+ * 停止并卸载 schtasks 托管的 cslot 服务，同时清理本地 XML 工件。
+ *
+ * @returns 停止前记录到的 PID；若当时没有可见运行 PID 则返回 `null`。
+ * @throws 当 schtasks 卸载或清理失败时抛出异常。
+ */
+function stopManagedServiceWithSchtasks(): number | null {
+  const pid = getRunningPid();
+  const taskName = getSchtasksTaskName();
+  const xmlPath = getSchtasksXmlPath();
+
+  runSchtasks(["/End", "/TN", taskName], [1]);
+  runSchtasks(["/Delete", "/TN", taskName], [1]);
+  fs.rmSync(xmlPath, { force: true });
+
+  if (pid && isProcessRunning(pid)) {
+    terminateProcess(pid);
+  }
+
+  fs.rmSync(getPidPath(), { force: true });
+
+  return pid;
 }
 
 /**
@@ -553,9 +820,7 @@ async function waitForManagedServiceReady(
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
-    try {
-      process.kill(pid, 0);
-    } catch {
+    if (!isProcessRunning(pid)) {
       throw new Error(`后台服务启动失败，进程已退出，PID=${pid}`);
     }
 
@@ -581,7 +846,7 @@ async function waitForManagedServiceReady(
 function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<typeof loadConfig>): void {
   if (pid && Number.isInteger(pid) && pid > 0) {
     try {
-      process.kill(pid, "SIGTERM");
+      terminateProcess(pid);
     } catch {
       // 子进程可能已经自行退出，此处按幂等清理处理。
     }
@@ -595,6 +860,8 @@ function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<type
       stopManagedServiceWithLaunchd();
     } else if (manager === "systemd-user") {
       stopManagedServiceWithSystemdUser();
+    } else if (manager === "schtasks") {
+      stopManagedServiceWithSchtasks();
     }
   } catch {
     // 回滚阶段以尽力清理为主，不覆盖原始启动异常。
@@ -700,6 +967,35 @@ async function resolveStartPort(
 }
 
 /**
+ * 以 detached 子进程方式启动后台服务，供 Windows 回退或非托管平台复用。
+ *
+ * @param port 最终启动端口。
+ * @param logPath 服务日志路径。
+ * @returns 子进程 PID。
+ * @throws 当子进程启动失败时抛出异常。
+ */
+function startDetachedManagedService(port: number, logPath: string): number {
+  const logFd = fs.openSync(logPath, "a");
+  const serveEntrypoint = resolveServeEntrypoint();
+  const child = spawn(serveEntrypoint.command, [...serveEntrypoint.args, "--port", String(port)], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    windowsHide: true,
+    env: createServiceSpawnEnv()
+  });
+  const childPid = child.pid ?? null;
+
+  child.unref();
+  fs.closeSync(logFd);
+
+  if (!childPid) {
+    throw new Error("后台服务启动失败，未获取到有效子进程 PID");
+  }
+
+  return childPid;
+}
+
+/**
  * 启动后台服务，并在需要时将端口写回本地配置。
  *
  * @param portOverride 可选端口文本；传入时会先校验并落盘到配置。
@@ -741,6 +1037,7 @@ export async function startManagedService(portOverride?: string): Promise<{
 
   const logPath = getServiceLogPath();
   let childPid: number | null = null;
+  let actualManager = manager;
 
   if (manager === "launchd") {
     try {
@@ -756,21 +1053,32 @@ export async function startManagedService(portOverride?: string): Promise<{
       rollbackFailedStart(null, previousConfig);
       throw error;
     }
+  } else if (manager === "schtasks") {
+    try {
+      childPid = await startManagedServiceWithSchtasks(port, logPath);
+    } catch (error) {
+      schtasksAvailability = false;
+
+      try {
+        stopManagedServiceWithSchtasks();
+      } catch {
+        // 回退前先尽力清理半成品计划任务。
+      }
+
+      try {
+        childPid = startDetachedManagedService(port, logPath);
+        actualManager = "detached";
+      } catch (fallbackError) {
+        rollbackFailedStart(null, previousConfig);
+        throw fallbackError;
+      }
+    }
   } else {
-    const logFd = fs.openSync(logPath, "a");
-    const serveEntrypoint = resolveServeEntrypoint();
-    const child = spawn(serveEntrypoint.command, [...serveEntrypoint.args, "--port", String(port)], {
-      detached: true,
-      stdio: ["ignore", logFd, logFd]
-    });
-
-    childPid = child.pid ?? null;
-    child.unref();
-    fs.closeSync(logFd);
-
-    if (!childPid) {
+    try {
+      childPid = startDetachedManagedService(port, logPath);
+    } catch (error) {
       rollbackFailedStart(null, previousConfig);
-      throw new Error("后台服务启动失败，未获取到有效子进程 PID");
+      throw error;
     }
   }
 
@@ -787,7 +1095,7 @@ export async function startManagedService(portOverride?: string): Promise<{
     port,
     logPath,
     autoSwitched,
-    manager
+    manager: actualManager
   };
 }
 
@@ -801,9 +1109,11 @@ export function stopManagedService(): { stoppedPid: number | null } {
   const manager = resolveServiceManagerKind();
   const hasLaunchAgent = manager === "launchd" && fs.existsSync(getLaunchAgentPlistPath());
   const hasSystemdUnit = manager === "systemd-user" && fs.existsSync(getSystemdUserUnitPath());
+  const hasSchtasksTask =
+    manager === "schtasks" && (fs.existsSync(getSchtasksXmlPath()) || isSchtasksTaskRegistered());
   const pid = getRunningPid();
 
-  if (!pid && !hasLaunchAgent && !hasSystemdUnit) {
+  if (!pid && !hasLaunchAgent && !hasSystemdUnit && !hasSchtasksTask) {
     deactivateManagedCodexConfig();
     deactivateManagedCodexAuth();
     return { stoppedPid: null };
@@ -813,8 +1123,10 @@ export function stopManagedService(): { stoppedPid: number | null } {
     stopManagedServiceWithLaunchd();
   } else if (hasSystemdUnit) {
     stopManagedServiceWithSystemdUser();
+  } else if (hasSchtasksTask) {
+    stopManagedServiceWithSchtasks();
   } else if (pid) {
-    process.kill(pid, "SIGTERM");
+    terminateProcess(pid);
     fs.rmSync(getPidPath(), { force: true });
   }
 

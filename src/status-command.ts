@@ -47,6 +47,8 @@ const ANSI = {
   yellow: "\x1b[33m"
 } as const;
 
+const USE_ALTERNATE_SCREEN = process.platform !== "win32";
+
 /**
  * 判断当前终端是否适合启用 ANSI 样式，避免在 dumb/no-color 环境输出控制字符。
  *
@@ -349,7 +351,10 @@ export function renderInteractiveStatusLayout(options: InteractiveStatusLayoutOp
  * @throws 无显式抛出。
  */
 function enterInteractiveScreen(): void {
-  process.stdout.write("\x1b[?1049h");
+  if (USE_ALTERNATE_SCREEN) {
+    process.stdout.write("\x1b[?1049h");
+  }
+
   process.stdout.write("\x1b[?25l");
 }
 
@@ -361,7 +366,14 @@ function enterInteractiveScreen(): void {
  */
 function leaveInteractiveScreen(): void {
   process.stdout.write("\x1b[?25h");
-  process.stdout.write("\x1b[?1049l");
+
+  if (USE_ALTERNATE_SCREEN) {
+    process.stdout.write("\x1b[?1049l");
+    return;
+  }
+
+  readline.cursorTo(process.stdout, 0, 0);
+  readline.clearScreenDown(process.stdout);
 }
 
 /**
@@ -665,7 +677,13 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
       applyChanges();
       stdin.off("keypress", onKeypress);
       process.stdout.off("resize", onResize);
-      stdin.setRawMode?.(false);
+
+      try {
+        stdin.setRawMode?.(false);
+      } catch {
+        // 某些 Windows 终端在退出 raw mode 时会抛错，忽略后继续恢复屏幕。
+      }
+
       stdin.pause();
       leaveInteractiveScreen();
 

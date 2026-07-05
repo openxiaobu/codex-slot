@@ -5,6 +5,7 @@ const test = require("node:test");
 
 const {
   buildLaunchAgentPlist,
+  buildSchtasksTaskXml,
   buildSystemdUserUnit
 } = require("../dist/app/service-lifecycle-service.js");
 
@@ -28,4 +29,14 @@ test("systemd user unit 包含自动重启与默认目标挂载配置", () => {
   assert.match(unit, /^ExecStart=/m);
   assert.match(unit, /^Environment=HOME="/m);
   assert.match(unit, /^StandardOutput=append:\/tmp\/cslot\/service\.log$/m);
+});
+
+test("schtasks XML 包含登录自启与失败重启配置", () => {
+  const xml = buildSchtasksTaskXml("C:\\\\Program Files\\\\nodejs\\\\node.exe", ["C:\\\\Users\\\\demo\\\\serve.js", "--port", "4399"], "C:\\\\Users\\\\demo\\\\.cslot\\\\logs\\\\service.log");
+
+  assert.match(xml, /<LogonTrigger>/);
+  assert.match(xml, /<RestartOnFailure>/);
+  assert.match(xml, /<Command>cmd\.exe<\/Command>/);
+  assert.match(xml, /USERPROFILE=/);
+  assert.match(xml, /service\.log/);
 });
