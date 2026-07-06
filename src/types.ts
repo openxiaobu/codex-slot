@@ -171,6 +171,14 @@ export interface AccountSchedulerStats {
   last_success_at: string | null;
 }
 
+export type CodexClientVersionCacheSource = "request" | "fallback";
+
+export interface CodexClientVersionCache {
+  version: string;
+  source: CodexClientVersionCacheSource;
+  updated_at: string;
+}
+
 export interface ManagedCodexConfigState {
   target_file: string;
 }
@@ -191,6 +199,7 @@ export interface CslotState {
   usage_cache: Record<string, UsageRefreshResult>;
   usage_refresh_errors: Record<string, UsageRefreshError>;
   scheduler_stats: Record<string, AccountSchedulerStats>;
+  codex_client_version_cache?: CodexClientVersionCache | null;
   managed_codex_auth?: ManagedCodexAuthState | null;
   managed_codex_config?: ManagedCodexConfigState | null;
 }

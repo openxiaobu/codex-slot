@@ -3,7 +3,11 @@ import { readAuthFile } from "./account-store";
 import { loadConfig } from "./config";
 import { listCandidateAccounts } from "./scheduler";
 import { recordAccountScheduleSuccess } from "./state-repository";
-import { setAccountBlock } from "./state";
+import {
+  getCachedCodexClientVersion,
+  setAccountBlock,
+  setCachedCodexClientVersion
+} from "./state";
 import { bi } from "./text";
 import { sendCodexRequest } from "./upstream-client";
 import {
@@ -13,7 +17,14 @@ import {
   resolveBlockWindow
 } from "./upstream-error-policy";
 import { refreshAccountTokens } from "./usage-sync";
-import type { CodexAuthFile, CslotConfig, SchedulerPick } from "./types";
+import type {
+  CodexAuthFile,
+  CodexClientVersionCacheSource,
+  CslotConfig,
+  SchedulerPick
+} from "./types";
+
+const FALLBACK_CODEX_CLIENT_VERSION = "0.142.5";
 
 interface UpstreamProxyResponse {
   statusCode: number;
@@ -38,6 +49,8 @@ interface ProxyRetryDependencies {
   refreshAccountTokens: typeof refreshAccountTokens;
   setAccountBlock: typeof setAccountBlock;
   recordAccountScheduleSuccess: typeof recordAccountScheduleSuccess;
+  getCachedCodexClientVersion: typeof getCachedCodexClientVersion;
+  setCachedCodexClientVersion: typeof setCachedCodexClientVersion;
 }
 
 export type ProxyRetryResult =
@@ -119,6 +132,99 @@ function buildSendResult(
 }
 
 /**
+ * 解析 models 响应中的模型标识。
+ *
+ * @param model Codex models 接口返回的单个模型对象，允许缺少非关键字段。
+ * @returns 可暴露给 OpenAI-compatible 客户端的模型 id；缺失时返回 `null`。
+ * @throws 无显式抛出。
+ */
+function resolveModelId(model: unknown): string | null {
+  if (!model || typeof model !== "object") {
+    return null;
+  }
+
+  const candidate = model as { slug?: unknown; id?: unknown };
+  if (typeof candidate.slug === "string" && candidate.slug) {
+    return candidate.slug;
+  }
+
+  if (typeof candidate.id === "string" && candidate.id) {
+    return candidate.id;
+  }
+
+  return null;
+}
+
+/**
+ * 将 Codex 私有 models 响应转换成 OpenAI-compatible models 列表。
+ *
+ * @param payload Codex 上游响应文本，期望结构为 `{ models: [...] }`。
+ * @returns Hermes 等客户端可识别的 `{ object, data }` 响应体。
+ * @throws 当响应不是合法 JSON 或 `models` 不是数组时抛出错误。
+ */
+function buildOpenAiCompatibleModelsPayload(payload: string): {
+  object: "list";
+  data: Array<{ id: string; object: "model"; created: number; owned_by: string }>;
+} {
+  const parsed = JSON.parse(payload) as { models?: unknown };
+  if (!Array.isArray(parsed.models)) {
+    throw new Error("Codex models response does not contain models array");
+  }
+
+  return {
+    object: "list",
+    data: parsed.models
+      .filter((model): model is Record<string, unknown> => {
+        if (!model || typeof model !== "object") {
+          return false;
+        }
+
+        return (model as { visibility?: unknown }).visibility !== "hide";
+      })
+      .map((model) => {
+        const id = resolveModelId(model);
+        if (!id) {
+          return null;
+        }
+
+        return {
+          id,
+          object: "model" as const,
+          created: 0,
+          owned_by: "openai"
+        };
+      })
+      .filter((model): model is { id: string; object: "model"; created: number; owned_by: string } => model !== null)
+  };
+}
+
+/**
+ * 删除请求头中的指定字段，并保持其他字段原样透传。
+ *
+ * @param headers 客户端发到本地代理的原始请求头。
+ * @param headerName 需要删除的请求头名称，按大小写不敏感匹配。
+ * @returns 删除目标字段后的浅拷贝请求头。
+ * @throws 无显式抛出。
+ */
+function omitRequestHeader(
+  headers: IncomingHttpHeaders,
+  headerName: string
+): IncomingHttpHeaders {
+  const nextHeaders: IncomingHttpHeaders = {};
+  const normalizedTarget = headerName.toLowerCase();
+
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === normalizedTarget) {
+      continue;
+    }
+
+    nextHeaders[key] = value;
+  }
+
+  return nextHeaders;
+}
+
+/**
  * 解析本地 Codex-compatible 代理请求，并转换成上游 codex path。
  *
  * 业务含义：
@@ -129,8 +235,13 @@ function buildSendResult(
  * @returns 可发往上游的 codex path；不属于代理范围时返回错误结果。
  * @throws 当 URL 解析失败时返回错误结果，不向上游发请求。
  */
-function resolveCodexPath(request: CodexProxyRequest): {
+function resolveCodexPath(request: CodexProxyRequest, dependencies: ProxyRetryDependencies): {
   pathWithQuery?: string;
+  clientVersionToCache?: {
+    version: string;
+    source: CodexClientVersionCacheSource;
+  };
+  adaptModelsForOpenAiClient?: boolean;
   error?: ProxyRetryResult;
 } {
   const parsedUrl = new URL(request.url, "http://127.0.0.1");
@@ -138,8 +249,38 @@ function resolveCodexPath(request: CodexProxyRequest): {
   const legacyBackendPrefix = "/backend-api/codex";
 
   if (parsedUrl.pathname.startsWith(`${openAiPrefix}/`)) {
+    if (
+      request.method.toUpperCase() === "GET" &&
+      parsedUrl.pathname === "/v1/models" &&
+      !parsedUrl.searchParams.has("client_version")
+    ) {
+      const cachedVersion = dependencies.getCachedCodexClientVersion();
+      const version = cachedVersion ?? FALLBACK_CODEX_CLIENT_VERSION;
+      parsedUrl.searchParams.set("client_version", version);
+
+      return {
+        pathWithQuery: `${parsedUrl.pathname.slice(openAiPrefix.length)}${parsedUrl.search}`,
+        clientVersionToCache: cachedVersion
+          ? undefined
+          : {
+              version,
+              source: "fallback"
+            },
+        adaptModelsForOpenAiClient: true
+      };
+    }
+
+    const clientVersion = parsedUrl.searchParams.get("client_version");
+
     return {
-      pathWithQuery: `${parsedUrl.pathname.slice(openAiPrefix.length)}${parsedUrl.search}`
+      pathWithQuery: `${parsedUrl.pathname.slice(openAiPrefix.length)}${parsedUrl.search}`,
+      clientVersionToCache:
+        parsedUrl.pathname === "/v1/models" && clientVersion
+          ? {
+              version: clientVersion,
+              source: "request"
+            }
+          : undefined
     };
   }
 
@@ -217,17 +358,25 @@ export function createProxyRetryService(overrides?: Partial<ProxyRetryDependenci
     refreshAccountTokens,
     setAccountBlock,
     recordAccountScheduleSuccess,
+    getCachedCodexClientVersion,
+    setCachedCodexClientVersion,
     ...overrides
   };
 
   const proxyCodexWithRetry = async (request: CodexProxyRequest): Promise<ProxyRetryResult> => {
-      const route = resolveCodexPath(request);
+      const route = resolveCodexPath(request, dependencies);
 
       if (route.error) {
         return route.error;
       }
 
       const candidates = dependencies.listCandidateAccounts();
+      const upstreamRequest = route.adaptModelsForOpenAiClient
+        ? {
+            ...request,
+            headers: omitRequestHeader(request.headers, "accept-encoding")
+          }
+        : request;
 
       if (candidates.length === 0) {
         return buildSendResult(503, {
@@ -265,7 +414,7 @@ export function createProxyRetryService(overrides?: Partial<ProxyRetryDependenci
         let upstream;
 
         try {
-          upstream = await sendWithAccount(dependencies, picked, accessToken, route.pathWithQuery!, request);
+          upstream = await sendWithAccount(dependencies, picked, accessToken, route.pathWithQuery!, upstreamRequest);
         } catch (error) {
           lastStatusCode = 503;
           if (isNetworkUnavailableError(error)) {
@@ -287,7 +436,7 @@ export function createProxyRetryService(overrides?: Partial<ProxyRetryDependenci
           try {
             const refreshed = await dependencies.refreshAccountTokens(picked.account.id);
             accessToken = refreshed.tokens?.access_token ?? accessToken;
-            upstream = await sendWithAccount(dependencies, picked, accessToken, route.pathWithQuery!, request);
+            upstream = await sendWithAccount(dependencies, picked, accessToken, route.pathWithQuery!, upstreamRequest);
           } catch (error) {
             lastStatusCode = 503;
             if (isNetworkUnavailableError(error)) {
@@ -357,6 +506,33 @@ export function createProxyRetryService(overrides?: Partial<ProxyRetryDependenci
         }
 
         dependencies.recordAccountScheduleSuccess(picked.account.id);
+
+        if (route.clientVersionToCache) {
+          dependencies.setCachedCodexClientVersion(
+            route.clientVersionToCache.version,
+            route.clientVersionToCache.source
+          );
+        }
+
+        if (route.adaptModelsForOpenAiClient) {
+          try {
+            return buildSendResult(
+              upstream.statusCode,
+              buildOpenAiCompatibleModelsPayload(await upstream.body.text()),
+              {
+                "content-type": "application/json",
+                "cache-control": responseHeaders["cache-control"] ?? "no-store"
+              }
+            );
+          } catch (error) {
+            return buildSendResult(502, {
+              error: {
+                message: `Codex models 响应格式无法转换: ${error instanceof Error ? error.message : String(error)}`,
+                type: "codex_models_adapter_failed"
+              }
+            });
+          }
+        }
 
         return {
           type: "proxy",

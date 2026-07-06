@@ -3,6 +3,7 @@ import path from "node:path";
 import { getCslotHome } from "./config";
 import type {
   AccountBlockState,
+  CodexClientVersionCacheSource,
   CslotState,
   ManagedCodexAuthState,
   ManagedCodexConfigState,
@@ -11,7 +12,7 @@ import type {
   UsageRefreshResult
 } from "./types";
 
-const STATE_SCHEMA_VERSION = 2;
+const STATE_SCHEMA_VERSION = 3;
 
 function getStatePath(): string {
   return path.join(getCslotHome(), "state.json");
@@ -38,6 +39,7 @@ function createDefaultState(): CslotState {
     usage_cache: {},
     usage_refresh_errors: {},
     scheduler_stats: {},
+    codex_client_version_cache: null,
     managed_codex_auth: null,
     managed_codex_config: null
   };
@@ -64,6 +66,8 @@ function normalizeState(parsed: Partial<CslotState> | null | undefined): CslotSt
     usage_cache: parsed?.usage_cache ?? defaults.usage_cache,
     usage_refresh_errors: parsed?.usage_refresh_errors ?? defaults.usage_refresh_errors,
     scheduler_stats: parsed?.scheduler_stats ?? defaults.scheduler_stats,
+    codex_client_version_cache:
+      parsed?.codex_client_version_cache ?? defaults.codex_client_version_cache,
     managed_codex_auth: parsed?.managed_codex_auth ?? defaults.managed_codex_auth,
     managed_codex_config: parsed?.managed_codex_config ?? defaults.managed_codex_config
   };
@@ -325,6 +329,41 @@ export function getSelectedModelRoute(): ModelRouteSelection {
 export function setSelectedModelRoute(selection: ModelRouteSelection | null): void {
   updateState((state) => {
     state.selected_model_route = normalizeModelRouteSelection(selection);
+  });
+}
+
+/**
+ * 读取最近一次已验证可用的 Codex client_version。
+ *
+ * 该值只在 `/v1/models` 成功请求后写入，用于 Hermes 等标准客户端不传
+ * `client_version` 时复用上次成功版本。
+ *
+ * @returns 已缓存版本；不存在时返回 `null`。
+ * @throws 当 state 文件读取或解析失败时透传底层异常。
+ */
+export function getCachedCodexClientVersion(): string | null {
+  const cache = loadState().codex_client_version_cache;
+  return cache?.version ?? null;
+}
+
+/**
+ * 记录最近一次已验证可用的 Codex client_version。
+ *
+ * @param version 成功访问 Codex models 接口的客户端版本。
+ * @param source 版本来源；`request` 表示客户端显式传入，`fallback` 表示 cslot 兜底版本成功。
+ * @returns 无返回值。
+ * @throws 当 state 文件写入失败时透传底层异常。
+ */
+export function setCachedCodexClientVersion(
+  version: string,
+  source: CodexClientVersionCacheSource
+): void {
+  updateState((state) => {
+    state.codex_client_version_cache = {
+      version,
+      source,
+      updated_at: new Date().toISOString()
+    };
   });
 }
 
