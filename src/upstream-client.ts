@@ -31,7 +31,8 @@ export function buildUpstreamHeaders(
       normalizedName === "authorization" ||
       normalizedName === "host" ||
       normalizedName === "connection" ||
-      normalizedName === "content-length"
+      normalizedName === "content-length" ||
+      normalizedName === "expect"
     ) {
       continue;
     }
@@ -157,7 +158,8 @@ export function buildChatGptBackendHeaders(
       normalizedName === "authorization" ||
       normalizedName === "host" ||
       normalizedName === "connection" ||
-      normalizedName === "content-length"
+      normalizedName === "content-length" ||
+      normalizedName === "expect"
     ) {
       continue;
     }

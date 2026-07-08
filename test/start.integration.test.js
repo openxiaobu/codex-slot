@@ -578,6 +578,69 @@ test("代理转发 200 后服务仍保持存活", async () => {
   }
 });
 
+test("下游客户端中途断开连接后服务仍保持存活", async () => {
+  const homeDir = createIsolatedHome();
+  const { server: upstreamServer, port: upstreamPort } = await startUpstreamServer((req, res) => {
+    if (req.url !== "/backend-api/codex/responses") {
+      res.statusCode = 404;
+      res.end("not found");
+      return;
+    }
+
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache"
+    });
+
+    // 持续写入多个 chunk，确保客户端断开后仍有后续写入命中已关闭的下游 socket，
+    // 从而复现 "cslot 进程被未处理的 socket error 事件杀死" 的真实场景。
+    const timer = setInterval(() => {
+      res.write("data: partial\n\n");
+    }, 10);
+
+    res.on("close", () => clearInterval(timer));
+  });
+
+  try {
+    prepareManagedProxyFixture(homeDir, upstreamPort);
+
+    const { stdout } = await runCli(homeDir, ["start"]);
+    const portMatch = stdout.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+    assert.ok(portMatch);
+    const proxyPort = Number(portMatch[1]);
+
+    await waitForHealth(proxyPort);
+
+    const abortController = new AbortController();
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ model: "test-model", input: "hello" }),
+      signal: abortController.signal
+    });
+
+    assert.equal(response.status, 200);
+
+    const reader = response.body.getReader();
+    await reader.read();
+    abortController.abort();
+    await reader.cancel().catch(() => {});
+
+    // 留出时间让下游代理在客户端已断开的 socket 上继续写入，
+    // 触发原本会杀死整个进程的未处理 "error" 事件。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    await waitForHealth(proxyPort);
+  } finally {
+    await runCli(homeDir, ["stop"]).catch(() => {});
+    await closeServer(upstreamServer);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("代理转发 GET /v1/models 到上游 codex models", async () => {
   const homeDir = createIsolatedHome();
   const seen = [];

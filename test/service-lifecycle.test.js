@@ -37,6 +37,7 @@ test("schtasks XML 包含登录自启与失败重启配置", () => {
 
   assert.match(xml, /<LogonTrigger>/);
   assert.match(xml, /<RestartOnFailure>/);
+  assert.match(xml, /<Hidden>true<\/Hidden>/);
   assert.match(xml, /<Command>cmd\.exe<\/Command>/);
   assert.match(xml, /USERPROFILE=/);
   assert.match(xml, /service\.log/);

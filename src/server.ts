@@ -58,7 +58,7 @@ async function readRawRequestBody(stream?: NodeJS.ReadableStream): Promise<Buffe
  * @returns Promise，流复制结束或被安全终止后返回。
  * @throws 无显式抛出；异常会被当前方法内部吞掉并转成连接销毁。
  */
-async function streamProxyResponse(
+export async function streamProxyResponse(
   reply: ProxyReply,
   result: {
     statusCode: number;
@@ -67,14 +67,30 @@ async function streamProxyResponse(
   }
 ): Promise<void> {
   reply.hijack();
+
+  // Node 的 http.ServerResponse 是 EventEmitter：客户端中途断开（如代理软件重连、
+  // TUN 模式切换节点）会在 `raw` 上异步触发 "error"。若不监听，Node 会把它当作
+  // 未捕获异常直接杀掉整个 cslot 进程，而不是仅仅终止这一条连接。
+  let socketErrored = false;
+  reply.raw.on("error", (error: Error) => {
+    socketErrored = true;
+    console.error("cslot proxy response socket error", error);
+  });
+
   reply.raw.writeHead(result.statusCode, result.headers);
 
   try {
     for await (const chunk of result.body) {
+      if (socketErrored || reply.raw.destroyed) {
+        break;
+      }
+
       reply.raw.write(chunk);
     }
 
-    reply.raw.end();
+    if (!socketErrored && !reply.raw.destroyed) {
+      reply.raw.end();
+    }
   } catch (error) {
     console.error("cslot proxy stream aborted", error);
 

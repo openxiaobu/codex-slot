@@ -57,6 +57,28 @@ function registerPidCleanupHandlers(): void {
 }
 
 /**
+ * 注册进程级兜底异常处理，避免单次请求中的意外异常（如上游连接被网络代理
+ * 中途掐断）导致整个 cslot 后台服务进程崩溃退出。
+ *
+ * 业务权衡：cslot 是本地长驻代理服务，单次请求失败应尽量只影响这一次请求，
+ * 而不是让整个服务下线等待外部重启（尤其当所在环境无法使用 schtasks 等
+ * 具备自动拉起能力的托管方式时，进程一旦退出可能长时间无人恢复）。
+ *
+ * @returns 无返回值。
+ * @throws 无显式抛出。
+ */
+function registerProcessSafetyNet(): void {
+  process.on("uncaughtException", (error: Error) => {
+    console.error(bi(`cslot 捕获到未处理异常，已忽略并继续运行: ${error.stack ?? error.message}`, `cslot caught an uncaught exception, ignored and continuing: ${error.stack ?? error.message}`));
+  });
+
+  process.on("unhandledRejection", (reason: unknown) => {
+    const message = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+    console.error(bi(`cslot 捕获到未处理的 Promise 拒绝，已忽略并继续运行: ${message}`, `cslot caught an unhandled promise rejection, ignored and continuing: ${message}`));
+  });
+}
+
+/**
  * 后台服务进程入口。
  *
  * @returns Promise，无返回值。
@@ -72,6 +94,7 @@ async function main(): Promise<void> {
 
   writeCurrentPid();
   registerPidCleanupHandlers();
+  registerProcessSafetyNet();
 
   await startServer(port);
 }

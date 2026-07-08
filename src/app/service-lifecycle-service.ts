@@ -477,6 +477,9 @@ export function buildSchtasksTaskXml(command: string, args: string[], logPath: s
     "      <Interval>PT1M</Interval>",
     "      <Count>999</Count>",
     "    </RestartOnFailure>",
+    // 没有这一项时，任务运行期间会一直挂着一个可见的 cmd.exe 黑窗口
+    // （cslot 服务是长驻进程，这个窗口会持续存在而不是一闪而过）。
+    "    <Hidden>true</Hidden>",
     "    <Enabled>true</Enabled>",
     "  </Settings>",
     "  <Actions Context=\"Author\">",
