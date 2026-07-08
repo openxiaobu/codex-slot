@@ -418,6 +418,24 @@ function getSchtasksXmlPath(): string {
 }
 
 /**
+ * 返回本机 `conhost.exe` 的绝对路径。
+ *
+ * 业务背景：Windows 计划任务的 `<Hidden>true</Hidden>` 只是把任务从任务计划程序
+ * 界面里隐藏，并不会隐藏它实际拉起的 cmd.exe 控制台窗口——这是一个常见的
+ * Windows 认知误区。真正能让长驻控制台程序在计划任务里"看不见但活着"的办法，
+ * 是让计划任务通过 `conhost.exe --headless --` 启动目标命令：这样目标进程依然
+ * 是计划任务直接跟踪的那个进程（`RestartOnFailure` 仍然生效），但系统不会为它
+ * 分配可见的控制台窗口。
+ *
+ * @returns `conhost.exe` 的绝对路径。
+ * @throws 无显式抛出。
+ */
+function getConhostPath(): string {
+  const systemRoot = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
+  return path.join(systemRoot, "System32", "conhost.exe");
+}
+
+/**
  * 生成 schtasks `/TR` 使用的命令行，补齐 HOME 并重定向日志。
  *
  * @param command 启动服务使用的绝对命令路径。
@@ -430,8 +448,9 @@ function buildSchtasksCommandLine(command: string, args: string[], logPath: stri
   const home = getUserHomeDir();
   const quotedArgs = args.map((item) => `"${item.replaceAll("\"", "\\\"")}"`).join(" ");
   const escapedLogPath = logPath.replaceAll("\"", "\\\"");
+  const conhostPath = getConhostPath();
 
-  return `cmd.exe /c set "USERPROFILE=${home}" && set "HOME=${home}" && "${command.replaceAll("\"", "\\\"")}" ${quotedArgs} >> "${escapedLogPath}" 2>&1`;
+  return `"${conhostPath}" --headless -- cmd.exe /c set "USERPROFILE=${home}" && set "HOME=${home}" && "${command.replaceAll("\"", "\\\"")}" ${quotedArgs} >> "${escapedLogPath}" 2>&1`;
 }
 
 /**
@@ -445,8 +464,12 @@ function buildSchtasksCommandLine(command: string, args: string[], logPath: stri
  */
 export function buildSchtasksTaskXml(command: string, args: string[], logPath: string): string {
   const home = escapeXml(getUserHomeDir());
+  const conhostPath = escapeXml(getConhostPath());
+  // `<Hidden>true</Hidden>` 只隐藏任务计划程序界面里的条目，并不会隐藏 cmd.exe
+  // 实际弹出的控制台窗口，因此必须再套一层 `conhost --headless --` 才能真正
+  // 不出现黑窗口，同时仍让计划任务直接跟踪这个进程以保留失败自动重启能力。
   const execArguments = escapeXml(
-    `/c set "USERPROFILE=${getUserHomeDir()}" && set "HOME=${getUserHomeDir()}" && "${command}" ${args.map((item) => `"${item.replaceAll("\"", "\\\"")}"`).join(" ")} >> "${logPath.replaceAll("\"", "\\\"")}" 2>&1`
+    `--headless -- cmd.exe /c set "USERPROFILE=${getUserHomeDir()}" && set "HOME=${getUserHomeDir()}" && "${command}" ${args.map((item) => `"${item.replaceAll("\"", "\\\"")}"`).join(" ")} >> "${logPath.replaceAll("\"", "\\\"")}" 2>&1`
   );
 
   return [
@@ -484,7 +507,7 @@ export function buildSchtasksTaskXml(command: string, args: string[], logPath: s
     "  </Settings>",
     "  <Actions Context=\"Author\">",
     "    <Exec>",
-    "      <Command>cmd.exe</Command>",
+    `      <Command>${conhostPath}</Command>`,
     `      <Arguments>${execArguments}</Arguments>`,
     `      <WorkingDirectory>${home}</WorkingDirectory>`,
     "    </Exec>",
