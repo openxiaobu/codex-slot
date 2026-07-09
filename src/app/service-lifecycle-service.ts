@@ -630,50 +630,93 @@ function getWindowsStartupFolder(): string {
 }
 
 /**
- * 返回写入 Startup 文件夹的 cslot 启动脚本路径。
+ * 返回写入 Startup 文件夹的 cslot 隐藏启动脚本路径（`.vbs`）。
  *
  * @returns 启动脚本绝对路径。
  * @throws 无显式抛出。
  */
 function getWindowsStartupEntryPath(): string {
+  return path.join(getWindowsStartupFolder(), `${getLaunchAgentLabel()}.vbs`);
+}
+
+/**
+ * 返回旧版 Startup `.cmd` 路径，供升级时清理残留黑窗口启动项。
+ *
+ * @returns 旧版启动脚本绝对路径。
+ * @throws 无显式抛出。
+ */
+function getLegacyWindowsStartupCmdPath(): string {
   return path.join(getWindowsStartupFolder(), `${getLaunchAgentLabel()}.cmd`);
 }
 
 /**
- * 生成 Windows 登录启动脚本，在计划任务不可用时作为回退自启方案。
+ * 返回 cslot 本地隐藏启动器（`.vbs`）路径，供 `start` 即时拉起与登录自启复用。
+ *
+ * @returns 隐藏启动器绝对路径。
+ * @throws 无显式抛出。
+ */
+function getWindowsHiddenRunnerPath(): string {
+  return path.join(getCslotHome(), "run-hidden.vbs");
+}
+
+/**
+ * 转义写入 VBScript 字符串字面量时的双引号。
+ *
+ * @param value 原始文本。
+ * @returns 可安全嵌入 `"..."` 的文本。
+ * @throws 无显式抛出。
+ */
+function escapeVbsString(value: string): string {
+  return value.replaceAll("\"", "\"\"");
+}
+
+/**
+ * 生成通过 `WScript.Shell.Run(..., 0, False)` 隐藏启动 cslot 的 VBScript。
+ *
+ * 业务背景：本机若无法创建计划任务，会回退到「启动文件夹 / detached」。
+ * 旧实现用 `.cmd` + `start /B` 或直接 `spawn(node)`，在交互式控制台里仍可能
+ * 挂出一个可见黑窗口；关掉该窗口会连带结束服务进程。这里改用与 Hermes
+ * 相同的 VBS 隐藏启动：窗口样式 `0` 表示完全隐藏，且子进程不再依附调用方控制台。
  *
  * @param command 启动服务使用的绝对命令路径。
  * @param args 命令参数列表。
  * @param logPath 服务日志路径。
- * @returns 可直接写入 `.cmd` 的批处理文本。
+ * @returns 可直接写入 `.vbs` 的脚本文本。
  * @throws 无显式抛出。
  */
 export function buildWindowsStartupScript(command: string, args: string[], logPath: string): string {
   const home = getUserHomeDir();
   const pidPath = getPidPath();
-  const quotedArgs = args.map((item) => `"${item.replaceAll("\"", "\\\"")}"`).join(" ");
-  const escapedCommand = command.replaceAll("\"", "\\\"");
-  const escapedLogPath = logPath.replaceAll("\"", "\\\"");
-  const escapedHome = home.replaceAll("\"", "\\\"");
-  const escapedPidPath = pidPath.replaceAll("\"", "\\\"");
+  const quotedArgs = args.map((item) => `"${item}"`).join(" ");
+  // 先拼出给 cmd.exe 执行的命令行，再整体做 VBS 字符串转义（`"` -> `""`）。
+  const commandLine = `cmd /c set "HOME=${home}" && set "USERPROFILE=${home}" && "${command}" ${quotedArgs} >> "${logPath}" 2>&1`;
 
   return [
-    "@echo off",
-    "setlocal",
-    `set "HOME=${escapedHome}"`,
-    `set "USERPROFILE=${escapedHome}"`,
-    `if exist "${escapedPidPath}" (`,
-    `  for /f "usebackq delims=" %%p in ("${escapedPidPath}") do (`,
-    `    tasklist /FI "PID eq %%p" 2>nul | find "%%p" >nul && exit /b 0`,
-    "  )",
-    ")",
-    `start /B "" "${escapedCommand}" ${quotedArgs} >> "${escapedLogPath}" 2>&1`,
+    "Set sh = CreateObject(\"WScript.Shell\")",
+    "Set fso = CreateObject(\"Scripting.FileSystemObject\")",
+    `pidPath = "${escapeVbsString(pidPath)}"`,
+    "If fso.FileExists(pidPath) Then",
+    "  Set pidFile = fso.OpenTextFile(pidPath, 1)",
+    "  pidText = Trim(pidFile.ReadAll)",
+    "  pidFile.Close",
+    "  If IsNumeric(pidText) Then",
+    "    On Error Resume Next",
+    "    Set procs = GetObject(\"winmgmts:\").ExecQuery(\"Select ProcessId from Win32_Process Where ProcessId=\" & CLng(pidText))",
+    "    If Err.Number = 0 Then",
+    "      For Each proc In procs",
+    "        WScript.Quit 0",
+    "      Next",
+    "    End If",
+    "    On Error GoTo 0",
+    "  End If",
+    "End If",
+    `sh.Run "${escapeVbsString(commandLine)}", 0, False`,
     ""
   ].join("\r\n");
 }
 
 /**
- * 将登录启动脚本写入 Windows「启动」文件夹。
+ * 将隐藏启动脚本写入 Windows「启动」文件夹，并清理旧版 `.cmd` 残留。
  *
  * @param port 最终启动端口。
  * @returns 无返回值。
@@ -691,26 +734,29 @@ function installWindowsStartupEntry(port: number): void {
 
   fs.mkdirSync(startupDir, { recursive: true });
   fs.writeFileSync(getWindowsStartupEntryPath(), script, "utf8");
+  // 旧版 `.cmd` + `start /B` 会挂可见控制台，升级后必须清掉，否则登录时仍弹黑窗。
+  fs.rmSync(getLegacyWindowsStartupCmdPath(), { force: true });
 }
 
 /**
- * 移除 Windows「启动」文件夹中的 cslot 启动脚本。
+ * 移除 Windows「启动」文件夹中的 cslot 启动脚本（含旧版 `.cmd`）。
  *
  * @returns 无返回值。
  * @throws 无显式抛出。
  */
 function uninstallWindowsStartupEntry(): void {
   fs.rmSync(getWindowsStartupEntryPath(), { force: true });
+  fs.rmSync(getLegacyWindowsStartupCmdPath(), { force: true });
 }
 
 /**
- * 判断当前 HOME 是否已安装 Windows 登录启动脚本。
+ * 判断当前 HOME 是否已安装 Windows 登录启动脚本（含旧版 `.cmd`）。
  *
  * @returns 启动脚本存在时返回 `true`，否则返回 `false`。
  * @throws 无显式抛出。
  */
 function hasWindowsStartupEntry(): boolean {
-  return fs.existsSync(getWindowsStartupEntryPath());
+  return fs.existsSync(getWindowsStartupEntryPath()) || fs.existsSync(getLegacyWindowsStartupCmdPath());
 }
 
 /**
@@ -718,11 +764,11 @@ function hasWindowsStartupEntry(): boolean {
  *
  * @param port 最终启动端口。
  * @param logPath 服务日志路径。
- * @returns 子进程 PID。
+ * @returns Promise，解析为服务进程 PID。
  * @throws 当服务启动或启动项写入失败时抛出异常。
  */
-function startManagedServiceWithWindowsStartup(port: number, logPath: string): number {
-  const childPid = startDetachedManagedService(port, logPath);
+async function startManagedServiceWithWindowsStartup(port: number, logPath: string): Promise<number> {
+  const childPid = await startDetachedManagedService(port, logPath);
   installWindowsStartupEntry(port);
   return childPid;
 }
@@ -737,6 +783,7 @@ function stopManagedServiceWithWindowsStartup(): number | null {
   const pid = getRunningPid();
 
   uninstallWindowsStartupEntry();
+  fs.rmSync(getWindowsHiddenRunnerPath(), { force: true });
 
   if (pid && isProcessRunning(pid)) {
     terminateProcess(pid);
@@ -1138,14 +1185,51 @@ async function resolveStartPort(
 }
 
 /**
+ * 在 Windows 上通过隐藏 VBS 启动器拉起后台服务，避免弹出可见控制台窗口。
+ *
+ * @param port 最终启动端口。
+ * @param logPath 服务日志路径。
+ * @returns Promise，解析为服务进程 PID。
+ * @throws 当启动器写入失败或服务未在超时内就绪时抛出异常。
+ */
+async function startHiddenWindowsManagedService(port: number, logPath: string): Promise<number> {
+  const serveEntrypoint = resolveServeEntrypoint();
+  const runnerPath = getWindowsHiddenRunnerPath();
+  const script = buildWindowsStartupScript(
+    serveEntrypoint.command,
+    [...serveEntrypoint.args, "--port", String(port)],
+    logPath
+  );
+
+  fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
+  fs.writeFileSync(runnerPath, script, "utf8");
+
+  const child = spawn("wscript.exe", ["//B", "//Nologo", runnerPath], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    env: createServiceSpawnEnv()
+  });
+
+  child.unref();
+
+  // VBS 只负责拉起真正的 node 服务；PID 文件由 serve 进程自己写入。
+  return await waitForManagedServicePid();
+}
+
+/**
  * 以 detached 子进程方式启动后台服务，供 Windows 回退或非托管平台复用。
  *
  * @param port 最终启动端口。
  * @param logPath 服务日志路径。
- * @returns 子进程 PID。
+ * @returns 子进程 PID；Windows 上返回 Promise 解析后的服务 PID。
  * @throws 当子进程启动失败时抛出异常。
  */
-function startDetachedManagedService(port: number, logPath: string): number {
+async function startDetachedManagedService(port: number, logPath: string): Promise<number> {
+  if (process.platform === "win32") {
+    return await startHiddenWindowsManagedService(port, logPath);
+  }
+
   const logFd = fs.openSync(logPath, "a");
   const serveEntrypoint = resolveServeEntrypoint();
   const child = spawn(serveEntrypoint.command, [...serveEntrypoint.args, "--port", String(port)], {
@@ -1241,7 +1325,7 @@ export async function startManagedService(portOverride?: string): Promise<{
       }
 
       try {
-        childPid = startManagedServiceWithWindowsStartup(port, logPath);
+        childPid = await startManagedServiceWithWindowsStartup(port, logPath);
         actualManager = "win-startup";
       } catch (fallbackError) {
         rollbackFailedStart(null, previousConfig);
@@ -1250,14 +1334,14 @@ export async function startManagedService(portOverride?: string): Promise<{
     }
   } else if (manager === "win-startup") {
     try {
-      childPid = startManagedServiceWithWindowsStartup(port, logPath);
+      childPid = await startManagedServiceWithWindowsStartup(port, logPath);
     } catch (error) {
       rollbackFailedStart(null, previousConfig);
       throw error;
     }
   } else {
     try {
-      childPid = startDetachedManagedService(port, logPath);
+      childPid = await startDetachedManagedService(port, logPath);
     } catch (error) {
       rollbackFailedStart(null, previousConfig);
       throw error;

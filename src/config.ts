@@ -56,10 +56,15 @@ const configSchema = z.object({
 /**
  * 解析当前进程应使用的用户 HOME 目录，兼容 Windows 缺少 `HOME` 的场景。
  *
+ * 业务背景：部分 shell / 启动脚本会把 `HOME` 写成带尾随空格的值
+ * （例如 `C:\Users\aihelp `）。Windows 上这种路径无法创建目录，会直接导致
+ * `mkdir '...\.cslot'` 以 `EPERM` 失败，服务表现为“启动超时”。
+ *
  * @returns 当前用户 HOME 目录；优先复用显式环境变量，兜底使用 `os.homedir()`。
  */
 export function getUserHomeDir(): string {
-  return process.env.HOME || process.env.USERPROFILE || os.homedir();
+  const raw = process.env.HOME || process.env.USERPROFILE || os.homedir();
+  return raw.trim();
 }
 
 /**

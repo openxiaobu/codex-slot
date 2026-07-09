@@ -415,9 +415,13 @@ test("默认启动会把实际端口同步到单一 provider 配置", async () =
     if (process.platform === "win32" && process.env.CSLOT_DISABLE_WIN_STARTUP !== "1") {
       const startupDir = path.join(homeDir, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
       const startupScripts = fs.existsSync(startupDir)
-        ? fs.readdirSync(startupDir).filter((fileName) => fileName.startsWith("com.openxiaobu.cslot.") && fileName.endsWith(".cmd"))
+        ? fs.readdirSync(startupDir).filter((fileName) => fileName.startsWith("com.openxiaobu.cslot.") && fileName.endsWith(".vbs"))
         : [];
       assert.equal(startupScripts.length, 1);
+      if (startupScripts.length === 1) {
+        const script = fs.readFileSync(path.join(startupDir, startupScripts[0]), "utf8");
+        assert.match(script, /sh\.Run ".+", 0, False/);
+      }
     }
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
@@ -433,7 +437,11 @@ test("默认启动会把实际端口同步到单一 provider 配置", async () =
     if (process.platform === "win32" && process.env.CSLOT_DISABLE_WIN_STARTUP !== "1") {
       const startupDir = path.join(homeDir, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
       if (fs.existsSync(startupDir)) {
-        const startupScripts = fs.readdirSync(startupDir).filter((fileName) => fileName.startsWith("com.openxiaobu.cslot.") && fileName.endsWith(".cmd"));
+        const startupScripts = fs.readdirSync(startupDir).filter(
+          (fileName) =>
+            fileName.startsWith("com.openxiaobu.cslot.") &&
+            (fileName.endsWith(".vbs") || fileName.endsWith(".cmd"))
+        );
         assert.equal(startupScripts.length, 0);
       }
     }

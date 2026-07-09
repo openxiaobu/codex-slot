@@ -44,12 +44,15 @@ test("schtasks XML 包含登录自启与失败重启配置", () => {
   assert.match(xml, /service\.log/);
 });
 
-test("Windows 启动脚本包含登录自启与 PID 去重逻辑", () => {
+test("Windows 启动脚本使用 VBS 隐藏启动并包含 PID 去重逻辑", () => {
   const script = buildWindowsStartupScript("C:\\\\Program Files\\\\nodejs\\\\node.exe", ["C:\\\\Users\\\\demo\\\\serve.js", "--port", "4399"], "C:\\\\Users\\\\demo\\\\.cslot\\\\logs\\\\service.log");
 
-  assert.match(script, /set "USERPROFILE=/);
-  assert.match(script, /set "HOME=/);
-  assert.match(script, /tasklist \/FI "PID eq %%p"/);
-  assert.match(script, /start \/B/);
+  assert.match(script, /WScript\.Shell/);
+  assert.match(script, /sh\.Run ".+", 0, False/);
+  // VBS 字符串里的双引号会被转义成 `""`，因此匹配 `set ""USERPROFILE=` / `set ""HOME=`。
+  assert.match(script, /set ""USERPROFILE=/);
+  assert.match(script, /set ""HOME=/);
+  assert.match(script, /Win32_Process/);
   assert.match(script, /serve\.js/);
+  assert.doesNotMatch(script, /start \/B/);
 });
