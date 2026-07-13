@@ -122,6 +122,7 @@ function renderDivider(width: number, styled: boolean): string {
  */
 function renderSummaryLine(
   summary: { available: number; fiveHourLimited: number; weeklyLimited: number },
+  showFiveHourWindow: boolean,
   narrowScreen: boolean,
   styled: boolean
 ): string {
@@ -130,10 +131,10 @@ function renderSummaryLine(
   const weeklyLimited = paint(String(summary.weeklyLimited), ANSI.yellow, styled);
 
   if (narrowScreen) {
-    return `ok=${available}  5h=${fiveHourLimited}  wk=${weeklyLimited}`;
+    return `ok=${available}${showFiveHourWindow ? `  5h=${fiveHourLimited}` : ""}  wk=${weeklyLimited}`;
   }
 
-  return `available=${available}  5h_limited=${fiveHourLimited}  weekly_limited=${weeklyLimited}`;
+  return `available=${available}${showFiveHourWindow ? `  5h_limited=${fiveHourLimited}` : ""}  weekly_limited=${weeklyLimited}`;
 }
 
 /**
@@ -554,6 +555,9 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
       const statusById = new Map(statusSource.map((item) => [item.id, item]));
       const autoSelectedId = pickBestAccount()?.account.id ?? null;
       const summary = summarizeAccountStatuses(statusSource);
+      const showFiveHourWindow = statusSource.some(
+        (item) => item.fiveHourLeftPercent !== null || item.fiveHourResetsAt !== null || item.isFiveHourLimited
+      );
 
       const displayStatuses = accounts
         .map((account) => {
@@ -626,7 +630,7 @@ async function handleInteractiveToggle(initialStatuses?: AccountRuntimeStatus[])
         ...currentDetails,
         "",
         renderSectionHeader("summary", rightWidth, styled),
-        renderSummaryLine(summary, rightWidth < 42, styled),
+        renderSummaryLine(summary, showFiveHourWindow, rightWidth < 42, styled),
         `model_route=${latestSnapshot.modelRouteLabel}`,
         `scheduler=${latestSnapshot.selectedName ?? "none"}`,
         `codex_auth=${selectedAuthAccountId ?? "none"}`,
@@ -881,7 +885,10 @@ export async function handleStatus(options?: StatusCommandOptions): Promise<void
     console.log(renderRelayStatusTable(displayRelays));
   }
   console.log("");
-  console.log(`available=${snapshot.summary.available} 5h_limited=${snapshot.summary.fiveHourLimited} weekly_limited=${snapshot.summary.weeklyLimited}`);
+  const showFiveHourWindow = snapshot.statuses.some(
+    (item) => item.fiveHourLeftPercent !== null || item.fiveHourResetsAt !== null || item.isFiveHourLimited
+  );
+  console.log(`available=${snapshot.summary.available}${showFiveHourWindow ? ` 5h_limited=${snapshot.summary.fiveHourLimited}` : ""} weekly_limited=${snapshot.summary.weeklyLimited}`);
   console.log(`model_route=${snapshot.modelRouteLabel}`);
   console.log(`scheduler=${snapshot.selectedName ?? "none"}`);
   console.log(`codex_auth=${snapshot.codexAuthAccountId ?? "none"}`);

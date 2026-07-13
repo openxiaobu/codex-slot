@@ -69,6 +69,37 @@ test("紧凑状态表只展示切换所需核心列，详情区补充 reset 与 
   assert.match(narrowDetails, /week\s+62%\s+reset=/);
 });
 
+test("没有主额度窗口时状态表和详情区只展示 WEEK", () => {
+  const status = {
+    id: "weekly-only",
+    name: "weekly-only",
+    email: "weekly-only@example.com",
+    enabled: true,
+    exists: true,
+    plan: "pro",
+    fiveHourLeftPercent: null,
+    fiveHourResetsAt: null,
+    weeklyLeftPercent: 73,
+    weeklyResetsAt: 1_763_500_000,
+    isFiveHourLimited: false,
+    isWeeklyLimited: false,
+    localBlockReason: undefined,
+    localBlockUntil: null,
+    refreshErrorCode: null,
+    refreshErrorMessage: null,
+    isAvailable: true,
+    sourcePath: "/tmp/weekly-only"
+  };
+
+  const table = renderStatusTable([status], { compact: true });
+  const details = renderStatusDetails(status);
+
+  assert.match(table, /SLOT\s+PLAN\s+WEEK\s+STATUS/);
+  assert.doesNotMatch(table, /5H/);
+  assert.match(details, /week\s+73%\s+reset=/);
+  assert.doesNotMatch(details, /5h\s+/);
+});
+
 test("紧凑状态表在宽终端展示完整账号名", () => {
   const statuses = [
     {

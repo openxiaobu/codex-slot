@@ -579,6 +579,9 @@ export function renderStatusTable(
   const compactPlanWidth = maxWidth < 56 ? 4 : 6;
   const compactStatusWidth = maxWidth < 56 ? 12 : 18;
   const compactSlotHeader = compactHeader ? "ID" : "SLOT";
+  const showFiveHourWindow = statuses.some(
+    (item) => item.fiveHourLeftPercent !== null || item.fiveHourResetsAt !== null || item.isFiveHourLimited
+  );
   const compactSlotWidth = resolveCompactSlotWidth(
     statuses,
     Boolean(selectorColumn),
@@ -593,7 +596,7 @@ export function renderStatusTable(
           ...(selectorColumn ? [" "] : []),
           compactSlotHeader,
           compactHeader ? "P" : "PLAN",
-          "5H",
+          ...(showFiveHourWindow ? ["5H"] : []),
           compactHeader ? "WK" : "WEEK",
           compactHeader ? "ST" : "STATUS"
         ]
@@ -602,8 +605,7 @@ export function renderStatusTable(
           "NAME",
           "EMAIL",
           "PLAN",
-          "5H剩余",
-          "5H重置",
+          ...(showFiveHourWindow ? ["5H剩余", "5H重置"] : []),
           "周剩余",
           "周重置",
           "STATUS"
@@ -625,7 +627,7 @@ export function renderStatusTable(
             ...(selectorCell ? [selectorCell] : []),
             styleNameCell(truncateCell(item.name, compactSlotWidth), styled),
             truncateCell(item.plan, compactPlanWidth),
-            formatPercent(item.fiveHourLeftPercent),
+            ...(showFiveHourWindow ? [formatPercent(item.fiveHourLeftPercent)] : []),
             formatPercent(item.weeklyLeftPercent),
             styleStatusCell(truncateCell(status, compactStatusWidth), item, styled)
           ]
@@ -634,8 +636,9 @@ export function renderStatusTable(
             styleNameCell(item.name, styled),
             item.email ?? "-",
             item.plan,
-            formatPercent(item.fiveHourLeftPercent),
-            formatReset(item.fiveHourResetsAt),
+            ...(showFiveHourWindow
+              ? [formatPercent(item.fiveHourLeftPercent), formatReset(item.fiveHourResetsAt)]
+              : []),
             formatPercent(item.weeklyLeftPercent),
             formatReset(item.weeklyResetsAt),
             styleStatusCell(status, item, styled)
@@ -673,22 +676,22 @@ export function renderStatusDetails(
 
   const maxWidth = options?.maxWidth ?? Number.POSITIVE_INFINITY;
   const narrow = maxWidth < 72;
+  const showFiveHourWindow =
+    item.fiveHourLeftPercent !== null || item.fiveHourResetsAt !== null || item.isFiveHourLimited;
   const lines = [
     ...(includeHeader ? ["[ current ]"] : []),
     formatDetailLine("slot", `${item.name}  plan=${item.plan}`, maxWidth),
     formatDetailLine("email", item.email ?? "-", maxWidth),
     formatDetailLine("status", resolveStatusLabel(item), maxWidth),
-    narrow
-      ? formatDetailLine(
-          "5h",
-          `${formatPercent(item.fiveHourLeftPercent)}  reset=${formatReset(item.fiveHourResetsAt)}`,
-          maxWidth
-        )
-      : formatDetailLine(
-          "5h",
-          `${formatPercent(item.fiveHourLeftPercent)}  reset=${formatReset(item.fiveHourResetsAt)}`,
-          maxWidth
-        ),
+    ...(showFiveHourWindow
+      ? [
+          formatDetailLine(
+            "5h",
+            `${formatPercent(item.fiveHourLeftPercent)}  reset=${formatReset(item.fiveHourResetsAt)}`,
+            maxWidth
+          )
+        ]
+      : []),
     narrow
       ? formatDetailLine(
           "week",
