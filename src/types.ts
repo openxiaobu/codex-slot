@@ -191,6 +191,8 @@ export interface ManagedCodexAuthState {
   original_account_auth_files: Record<string, string>;
 }
 
+export type ServiceRunMode = "codex_managed" | "proxy_only";
+
 export interface CslotState {
   state_version: number;
   selected_codex_auth_account_id?: string | null;
@@ -202,4 +204,5 @@ export interface CslotState {
   codex_client_version_cache?: CodexClientVersionCache | null;
   managed_codex_auth?: ManagedCodexAuthState | null;
   managed_codex_config?: ManagedCodexConfigState | null;
+  service_run_mode?: ServiceRunMode | null;
 }

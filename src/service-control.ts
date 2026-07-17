@@ -21,12 +21,13 @@ function describeServiceManager(manager: "launchd" | "systemd-user" | "schtasks"
  * 后台启动 cslot 服务并写入 PID 文件。
  *
  * @param portOverride 可选的端口文本；传入时会先校验并落盘到本地配置。
+ * @param proxyOnly 是否只启动本地代理；为 `true` 时不接管主 Codex 配置与登录态。
  * @returns Promise，无返回值。
  * @throws 当服务已在运行、端口非法或子进程启动失败时抛出异常。
  */
-export async function handleStart(portOverride?: string): Promise<void> {
+export async function handleStart(portOverride?: string, proxyOnly = false): Promise<void> {
   const config = loadConfig();
-  const result = await startManagedService(portOverride);
+  const result = await startManagedService(portOverride, { manageCodexIntegration: !proxyOnly });
 
   if (result.alreadyRunning) {
     console.log(bi(`服务已在运行，PID=${result.pid}`, `Service is already running. PID=${result.pid}`));
@@ -56,16 +57,20 @@ export async function handleStart(portOverride?: string): Promise<void> {
   console.log(`托管 / Manager: ${describeServiceManager(result.manager)}`);
   console.log(`PID: ${result.pid}`);
   console.log(bi(`日志: ${result.logPath}`, `Log: ${result.logPath}`));
+  if (result.runMode === "proxy_only") {
+    console.log(bi("运行模式: 仅代理，未接管主 Codex 配置与登录态", "Mode: proxy only; main Codex config and auth were not managed"));
+  }
 }
 
 /**
- * 停止后台运行的 cslot 服务，并恢复被接管的 Codex 配置。
+ * 停止后台运行的 cslot 服务，并按参数恢复或保留主 Codex 配置与登录态。
  *
+ * @param proxyOnly 是否只停止代理；为 `true` 时不清理或恢复主 Codex 配置与登录态。
  * @returns 无返回值。
  * @throws 当进程终止失败时透传底层异常。
  */
-export function handleStop(): void {
-  const result = stopManagedService();
+export function handleStop(proxyOnly = false): void {
+  const result = stopManagedService({ preserveCodexIntegration: proxyOnly });
 
   if (!result.stoppedPid) {
     console.log(bi("服务未运行", "Service is not running."));
@@ -73,4 +78,7 @@ export function handleStop(): void {
   }
 
   console.log(bi(`服务已停止，PID=${result.stoppedPid}`, `Service stopped. PID=${result.stoppedPid}`));
+  if (result.codexIntegrationPreserved) {
+    console.log(bi("停止模式: 仅代理，未改动主 Codex 配置与登录态", "Stop mode: proxy only; main Codex config and auth were preserved"));
+  }
 }

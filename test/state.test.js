@@ -6,9 +6,11 @@ const test = require("node:test");
 
 const {
   getCachedCodexClientVersion,
+  getServiceRunMode,
   loadState,
   saveState,
-  setCachedCodexClientVersion
+  setCachedCodexClientVersion,
+  setServiceRunMode
 } = require("../dist/state.js");
 
 function createIsolatedHome() {
@@ -50,12 +52,13 @@ test("state 读取旧格式时自动补齐当前 schema 字段", () => {
   try {
     const state = withHome(homeDir, () => loadState());
 
-    assert.equal(state.state_version, 3);
+    assert.equal(state.state_version, 4);
     assert.equal(state.selected_codex_auth_account_id, null);
     assert.deepEqual(state.scheduler_stats, {});
     assert.equal(state.managed_codex_auth, null);
     assert.equal(state.managed_codex_config, null);
     assert.equal(state.codex_client_version_cache, null);
+    assert.equal(state.service_run_mode, null);
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
@@ -93,10 +96,11 @@ test("state 保存时写入版本并通过临时文件原子替换", () => {
     const saved = JSON.parse(fs.readFileSync(statePath, "utf8"));
     const tempFiles = fs.readdirSync(cslotDir).filter((item) => item.includes(".tmp"));
 
-    assert.equal(saved.state_version, 3);
+    assert.equal(saved.state_version, 4);
     assert.equal(saved.selected_codex_auth_account_id, "slot-a");
     assert.equal(saved.scheduler_stats.a.success_count, 1);
     assert.equal(saved.codex_client_version_cache.version, "0.150.0");
+    assert.equal(saved.service_run_mode, null);
     assert.deepEqual(tempFiles, []);
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -114,6 +118,24 @@ test("state 可读写 Codex client_version 成功缓存", () => {
 
       assert.equal(getCachedCodexClientVersion(), "0.142.5");
       assert.equal(loadState().codex_client_version_cache.source, "fallback");
+    });
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("state 可持久化 proxy-only 服务运行模式", () => {
+  const homeDir = createIsolatedHome();
+
+  try {
+    withHome(homeDir, () => {
+      assert.equal(getServiceRunMode(), null);
+
+      setServiceRunMode("proxy_only");
+      assert.equal(getServiceRunMode(), "proxy_only");
+
+      setServiceRunMode(null);
+      assert.equal(getServiceRunMode(), null);
     });
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });

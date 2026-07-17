@@ -70,9 +70,11 @@ codex-slot status --no-interactive
 ```bash
 codex-slot start
 codex-slot start --port 4399
+codex-slot start --proxy-only
 ```
 
 `start` will automatically write the required provider config into `~/.codex/config.toml`.
+Use `--proxy-only` for non-Codex clients: it starts the local proxy without modifying the main `~/.codex/config.toml` or login state. A later `cslot stop` also preserves those files for this run mode.
 It prefers port `4399` by default and will switch to the next available port automatically when `4399` is busy, then sync that actual port into config.
 The local provider does not use a separate cslot API key; cslot authenticates upstream requests with the selected Codex ChatGPT account token internally.
 
@@ -88,8 +90,8 @@ codex-slot del <name>
 codex-slot rename <oldName> <newName>
 codex-slot import <name> [HOME]
 codex-slot status
-codex-slot start [--port <port>]
-codex-slot stop
+codex-slot start [--port <port>] [--proxy-only]
+codex-slot stop [--proxy-only]
 codex-slot relay add <name> --base-url <url> --api-key <key>
 codex-slot relay list
 codex-slot use relay <name>
@@ -106,6 +108,8 @@ Common patterns:
 - `cslot use relay third`
 - `cslot use auth`
 - `cslot start`
+- `cslot start --proxy-only`
+- `cslot stop --proxy-only`
 
 ## Architecture
 
@@ -153,6 +157,8 @@ Behavior:
 - On `cslot stop`, the original `model_provider` line and original `[model_providers.cslot]` block are restored from the saved snapshot; legacy local bearer-token fields in the cslot provider are removed
 - Other providers and settings in `config.toml` are left untouched
 - If you start with `--port`, the port is saved to `~/.cslot/config.yaml`
+- If you start with `--proxy-only`, cslot does not modify the main `~/.codex/config.toml` or login state; `stop` also skips Codex cleanup for that run
+- `cslot stop --proxy-only` forces a service-only stop and preserves the main Codex config and login state regardless of the recorded start mode
 - If you start without `--port`, `4399` is preferred first and the next free port is chosen automatically on conflict, and the actual chosen port is written back to `~/.cslot/config.yaml` and the managed provider block
 - `requires_openai_auth = true` keeps Codex App treating the local cslot provider as a ChatGPT-authenticated provider, so plugin navigation and trusted plugin runtimes are not disabled as API-key/custom-provider mode
 - `/backend-api/*` requests are forwarded to ChatGPT backend with the current selected account's upstream token; client `Authorization` headers are not forwarded upstream

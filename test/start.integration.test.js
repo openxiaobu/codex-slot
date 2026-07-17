@@ -42,12 +42,16 @@ function createCliEnv(homeDir) {
  *
  * @param homeDir 测试专用 HOME 目录。
  * @param args CLI 参数列表。
+ * @param envOverrides 可选环境变量覆盖项，用于选择可控的服务托管方式。
  * @returns CLI 标准输出与标准错误。
  * @throws 当 CLI 命令执行失败时透传子进程异常。
  */
-async function runCli(homeDir, args) {
+async function runCli(homeDir, args, envOverrides = {}) {
   return execFileAsync(process.execPath, [cliPath, ...args], {
-    env: createCliEnv(homeDir)
+    env: {
+      ...createCliEnv(homeDir),
+      ...envOverrides
+    }
   });
 }
 
@@ -446,6 +450,60 @@ test("默认启动会把实际端口同步到单一 provider 配置", async () =
       }
     }
 
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("proxy-only 启停不会修改主 Codex 配置与登录态", async () => {
+  const homeDir = createIsolatedHome();
+  const codexDir = path.join(homeDir, ".codex");
+  const configPath = path.join(codexDir, "config.toml");
+  const authPath = path.join(codexDir, "auth.json");
+  const originalConfig = [
+    'model_provider = "cslot"',
+    "",
+    "[model_providers.cslot]",
+    'name = "manual-cslot"',
+    'base_url = "https://manual.example.com/v1"'
+  ].join("\n") + "\n";
+  const originalAuth = `${JSON.stringify({ auth_mode: "chatgpt", marker: "original-auth" }, null, 2)}\n`;
+  const proxyOnlyEnv = {
+    CSLOT_DISABLE_LAUNCHD: "1",
+    CSLOT_DISABLE_SCHTASKS: "1",
+    CSLOT_DISABLE_SYSTEMD: "1",
+    CSLOT_DISABLE_WIN_STARTUP: "1"
+  };
+
+  fs.mkdirSync(codexDir, { recursive: true });
+  fs.writeFileSync(configPath, originalConfig, "utf8");
+  fs.writeFileSync(authPath, originalAuth, "utf8");
+
+  try {
+    const { stdout } = await runCli(homeDir, ["start", "--proxy-only"], proxyOnlyEnv);
+    const portMatch = stdout.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+    assert.ok(portMatch);
+    assert.match(stdout, /运行模式: 仅代理|Mode: proxy only/);
+
+    await waitForHealth(Number(portMatch[1]));
+
+    assert.equal(fs.readFileSync(configPath, "utf8"), originalConfig);
+    assert.equal(fs.readFileSync(authPath, "utf8"), originalAuth);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(homeDir, ".cslot", "state.json"), "utf8")).service_run_mode, "proxy_only");
+
+    const { stdout: stopStdout } = await runCli(homeDir, ["stop", "--proxy-only"], proxyOnlyEnv);
+    assert.match(stopStdout, /停止模式: 仅代理|Stop mode: proxy only/);
+
+    assert.equal(fs.readFileSync(configPath, "utf8"), originalConfig);
+    assert.equal(fs.readFileSync(authPath, "utf8"), originalAuth);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(homeDir, ".cslot", "state.json"), "utf8")).service_run_mode, null);
+  } catch (error) {
+    const logPath = path.join(homeDir, ".cslot", "logs", "service.log");
+    if (fs.existsSync(logPath)) {
+      error.message = `${error.message}\nservice.log:\n${fs.readFileSync(logPath, "utf8")}`;
+    }
+    throw error;
+  } finally {
+    await runCli(homeDir, ["stop"], proxyOnlyEnv).catch(() => {});
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });

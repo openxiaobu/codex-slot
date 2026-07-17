@@ -8,11 +8,12 @@ import type {
   ManagedCodexAuthState,
   ManagedCodexConfigState,
   ModelRouteSelection,
+  ServiceRunMode,
   UsageRefreshError,
   UsageRefreshResult
 } from "./types";
 
-const STATE_SCHEMA_VERSION = 3;
+const STATE_SCHEMA_VERSION = 4;
 
 function getStatePath(): string {
   return path.join(getCslotHome(), "state.json");
@@ -41,7 +42,8 @@ function createDefaultState(): CslotState {
     scheduler_stats: {},
     codex_client_version_cache: null,
     managed_codex_auth: null,
-    managed_codex_config: null
+    managed_codex_config: null,
+    service_run_mode: null
   };
 }
 
@@ -69,8 +71,20 @@ function normalizeState(parsed: Partial<CslotState> | null | undefined): CslotSt
     codex_client_version_cache:
       parsed?.codex_client_version_cache ?? defaults.codex_client_version_cache,
     managed_codex_auth: parsed?.managed_codex_auth ?? defaults.managed_codex_auth,
-    managed_codex_config: parsed?.managed_codex_config ?? defaults.managed_codex_config
+    managed_codex_config: parsed?.managed_codex_config ?? defaults.managed_codex_config,
+    service_run_mode: normalizeServiceRunMode(parsed?.service_run_mode)
   };
+}
+
+/**
+ * 归一化后台服务运行模式，避免历史状态或手工编辑值改变停止阶段的清理边界。
+ *
+ * @param value state 文件中的服务运行模式；仅接受受管 Codex 与纯代理两种模式。
+ * @returns 合法运行模式；缺失或非法时返回 `null`，由停止流程沿用旧版清理语义。
+ * @throws 无显式抛出。
+ */
+function normalizeServiceRunMode(value: ServiceRunMode | null | undefined): ServiceRunMode | null {
+  return value === "codex_managed" || value === "proxy_only" ? value : null;
 }
 
 /**
@@ -301,6 +315,29 @@ export function getSelectedCodexAuthAccountId(): string | null {
 export function setSelectedCodexAuthAccountId(accountId: string | null): void {
   updateState((state) => {
     state.selected_codex_auth_account_id = accountId;
+  });
+}
+
+/**
+ * 读取当前后台服务的运行模式。
+ *
+ * @returns `codex_managed` 表示服务接管主 Codex 配置与登录态，`proxy_only` 表示只运行代理；历史状态返回 `null`。
+ * @throws 当 state 文件读取或解析失败时透传底层异常。
+ */
+export function getServiceRunMode(): ServiceRunMode | null {
+  return normalizeServiceRunMode(loadState().service_run_mode);
+}
+
+/**
+ * 保存当前后台服务的运行模式，供停止流程确定是否允许修改主 Codex 文件。
+ *
+ * @param mode 当前运行模式；传入 `null` 表示服务已经停止或尚未记录模式。
+ * @returns 无返回值。
+ * @throws 当 state 文件写入失败时透传底层异常。
+ */
+export function setServiceRunMode(mode: ServiceRunMode | null): void {
+  updateState((state) => {
+    state.service_run_mode = normalizeServiceRunMode(mode);
   });
 }
 

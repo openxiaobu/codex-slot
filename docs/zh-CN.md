@@ -64,9 +64,11 @@ codex-slot status --no-interactive
 ```bash
 codex-slot start
 codex-slot start --port 4399
+codex-slot start --proxy-only
 ```
 
 `start` 会自动把需要的 provider 配置写入 `~/.codex/config.toml`。
+非 Codex 客户端可使用 `--proxy-only`：只启动本地代理，不修改主 `~/.codex/config.toml` 和登录态；本次运行后执行 `cslot stop` 也会保留这些文件。
 默认优先使用 `4399`，如果该端口被占用，会自动切换到下一个可用端口，并把实际启动端口同步写入配置。
 cslot 本地 provider 不再需要独立 `api_key`；上游请求由 cslot 内部使用当前调度账号的 Codex ChatGPT token 完成鉴权。
 
@@ -82,8 +84,8 @@ codex-slot del <name>
 codex-slot rename <oldName> <newName>
 codex-slot import <name> [HOME]
 codex-slot status
-codex-slot start [--port <port>]
-codex-slot stop
+codex-slot start [--port <port>] [--proxy-only]
+codex-slot stop [--proxy-only]
 codex-slot relay add <name> --base-url <url> --api-key <key>
 codex-slot relay list
 codex-slot use relay <name>
@@ -100,6 +102,8 @@ codex-slot current
 - `cslot use relay third`
 - `cslot use auth`
 - `cslot start`
+- `cslot start --proxy-only`
+- `cslot stop --proxy-only`
 
 ## 架构
 
@@ -152,6 +156,8 @@ wire_api = "responses"
 - `config.toml` 里其他 provider 和配置保持不变
 - 全局 `model` 不会改
 - 如果通过 `cslot start --port <端口>` 指定端口，会把端口写入 `~/.cslot/config.yaml`
+- 如果通过 `cslot start --proxy-only` 启动，只运行本地代理，不修改主 `~/.codex/config.toml` 和登录态；对应的 `stop` 也不会清理这些文件
+- `cslot stop --proxy-only` 会强制只停止代理，无论记录的启动模式是什么，都不清理或恢复主 Codex 配置与登录态
 - 如果不指定端口，会优先尝试 `4399`，冲突时自动顺延到下一个空闲端口，并把实际启动端口写入 `~/.cslot/config.yaml` 与受管 provider 配置
 - `/backend-api/*` 请求会透传到 ChatGPT backend，并由 cslot 内部替换为当前调度账号的上游 token；客户端传入的 `Authorization` 不会继续透传到上游
 

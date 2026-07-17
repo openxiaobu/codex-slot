@@ -5,19 +5,27 @@ import { execFileSync, spawn } from "node:child_process";
 import { request } from "undici";
 import { listAccounts } from "./account-service";
 import { hasCompleteCodexAuthState } from "../account-store";
-import { getSelectedCodexAuthAccountId } from "../state";
+import { getSelectedCodexAuthAccountId, getServiceRunMode, setServiceRunMode } from "../state";
 import { applyManagedCodexConfig, deactivateManagedCodexConfig } from "../codex-config";
 import { applyManagedCodexAuth, deactivateManagedCodexAuth } from "../codex-auth";
 import { parsePort } from "../cli-helpers";
 import { getCslotHome, getPidPath, getServiceLogPath, getUserHomeDir, loadConfig, saveConfig } from "../config";
 import { isProcessRunning, terminateProcess } from "../process-utils";
-import type { ManagedAccount } from "../types";
+import type { ManagedAccount, ServiceRunMode } from "../types";
 
 const STARTUP_POLL_INTERVAL_MS = 100;
 const STARTUP_TIMEOUT_MS = 5000;
 const LAUNCH_AGENT_LABEL_PREFIX = "com.openxiaobu.cslot";
 
 export type ServiceManagerKind = "launchd" | "systemd-user" | "schtasks" | "win-startup" | "detached";
+
+interface StartManagedServiceOptions {
+  manageCodexIntegration?: boolean;
+}
+
+interface StopManagedServiceOptions {
+  preserveCodexIntegration?: boolean;
+}
 
 /**
  * 休眠指定毫秒数，供启动轮询流程复用。
@@ -1056,10 +1064,12 @@ async function waitForManagedServiceReady(
  *
  * @param pid 可能已创建的子进程 PID。
  * @param previousConfig 启动前的原始配置快照。
+ * @param manageCodexIntegration 本次启动是否接管了主 Codex 配置与登录态；纯代理模式必须为 `false`。
+ * @param previousRunMode 启动前记录的服务运行模式；回滚时原样恢复。
  * @returns 无返回值。
  * @throws 无显式抛出。
  */
-function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<typeof loadConfig>): void {
+function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<typeof loadConfig>, manageCodexIntegration: boolean, previousRunMode: ServiceRunMode | null): void {
   if (pid && Number.isInteger(pid) && pid > 0) {
     try {
       terminateProcess(pid);
@@ -1085,8 +1095,11 @@ function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<type
     // 回滚阶段以尽力清理为主，不覆盖原始启动异常。
   }
   saveConfig(previousConfig);
-  deactivateManagedCodexConfig();
-  deactivateManagedCodexAuth();
+  if (manageCodexIntegration) {
+    deactivateManagedCodexConfig();
+    deactivateManagedCodexAuth();
+  }
+  setServiceRunMode(previousRunMode);
 }
 
 /**
@@ -1254,19 +1267,24 @@ async function startDetachedManagedService(port: number, logPath: string): Promi
  * 启动后台服务，并在需要时将端口写回本地配置。
  *
  * @param portOverride 可选端口文本；传入时会先校验并落盘到配置。
+ * @param options 启动选项；`manageCodexIntegration=false` 时只启动代理，不读写主 `~/.codex` 配置与登录态。
  * @returns 启动结果，包含是否已在运行、最终端口、PID 和日志路径。
  * @throws 当端口非法、接管配置失败或子进程启动失败时抛出异常。
  */
-export async function startManagedService(portOverride?: string): Promise<{
+export async function startManagedService(portOverride?: string, options?: StartManagedServiceOptions): Promise<{
   alreadyRunning: boolean;
   pid: number;
   port: number;
   logPath: string;
   autoSwitched: boolean;
   manager: ServiceManagerKind;
+  runMode: ServiceRunMode;
 }> {
   const config = loadConfig();
   const previousConfig = structuredClone(config);
+  const previousRunMode = getServiceRunMode();
+  const manageCodexIntegration = options?.manageCodexIntegration ?? true;
+  const requestedRunMode: ServiceRunMode = manageCodexIntegration ? "codex_managed" : "proxy_only";
   const { port, autoSwitched } = await resolveStartPort(config.server.host, portOverride);
   const manager = resolveServiceManagerKind();
   const runningPid = getRunningPid();
@@ -1282,7 +1300,8 @@ export async function startManagedService(portOverride?: string): Promise<{
       port: config.server.port,
       logPath: getServiceLogPath(),
       autoSwitched: false,
-      manager
+      manager,
+      runMode: previousRunMode ?? "codex_managed"
     };
   }
 
@@ -1291,8 +1310,10 @@ export async function startManagedService(portOverride?: string): Promise<{
     saveConfig(config);
   }
 
-  applyManagedCodexConfig(undefined, { config });
-  applyManagedAuthIfPossible();
+  if (manageCodexIntegration) {
+    applyManagedCodexConfig(undefined, { config });
+    applyManagedAuthIfPossible();
+  }
 
   const logPath = getServiceLogPath();
   let childPid: number | null = null;
@@ -1302,14 +1323,14 @@ export async function startManagedService(portOverride?: string): Promise<{
     try {
       childPid = await startManagedServiceWithLaunchd(port, logPath);
     } catch (error) {
-      rollbackFailedStart(null, previousConfig);
+      rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
       throw error;
     }
   } else if (manager === "systemd-user") {
     try {
       childPid = await startManagedServiceWithSystemdUser(port, logPath);
     } catch (error) {
-      rollbackFailedStart(null, previousConfig);
+      rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
       throw error;
     }
   } else if (manager === "schtasks") {
@@ -1328,7 +1349,7 @@ export async function startManagedService(portOverride?: string): Promise<{
         childPid = await startManagedServiceWithWindowsStartup(port, logPath);
         actualManager = "win-startup";
       } catch (fallbackError) {
-        rollbackFailedStart(null, previousConfig);
+        rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
         throw fallbackError;
       }
     }
@@ -1336,22 +1357,23 @@ export async function startManagedService(portOverride?: string): Promise<{
     try {
       childPid = await startManagedServiceWithWindowsStartup(port, logPath);
     } catch (error) {
-      rollbackFailedStart(null, previousConfig);
+      rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
       throw error;
     }
   } else {
     try {
       childPid = await startDetachedManagedService(port, logPath);
     } catch (error) {
-      rollbackFailedStart(null, previousConfig);
+      rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
       throw error;
     }
   }
 
   try {
     await waitForManagedServiceReady(config.server.host, port, childPid);
+    setServiceRunMode(requestedRunMode);
   } catch (error) {
-    rollbackFailedStart(childPid, previousConfig);
+    rollbackFailedStart(childPid, previousConfig, manageCodexIntegration, previousRunMode);
     throw error;
   }
 
@@ -1361,17 +1383,21 @@ export async function startManagedService(portOverride?: string): Promise<{
     port,
     logPath,
     autoSwitched,
-    manager: actualManager
+    manager: actualManager,
+    runMode: requestedRunMode
   };
 }
 
 /**
- * 停止后台服务，并恢复被接管的 Codex 配置。
+ * 停止后台服务，并按运行模式恢复或保留主 Codex 配置与登录态。
  *
- * @returns 停止结果；若服务未运行则仅执行配置恢复。
+ * @param options 停止选项；`preserveCodexIntegration=true` 时只停止服务，不修改主 Codex 配置与登录态。
+ * @returns 停止结果；包含停止前 PID 与本次是否保留主 Codex 文件。
  * @throws 当进程终止失败时透传底层异常。
  */
-export function stopManagedService(): { stoppedPid: number | null } {
+export function stopManagedService(options?: StopManagedServiceOptions): { stoppedPid: number | null; codexIntegrationPreserved: boolean } {
+  const runMode = getServiceRunMode();
+  const manageCodexIntegration = options?.preserveCodexIntegration !== true && runMode !== "proxy_only";
   const manager = resolveServiceManagerKind();
   const hasLaunchAgent = manager === "launchd" && fs.existsSync(getLaunchAgentPlistPath());
   const hasSystemdUnit = manager === "systemd-user" && fs.existsSync(getSystemdUserUnitPath());
@@ -1381,9 +1407,12 @@ export function stopManagedService(): { stoppedPid: number | null } {
   const pid = getRunningPid();
 
   if (!pid && !hasLaunchAgent && !hasSystemdUnit && !hasSchtasksTask && !hasWindowsStartup) {
-    deactivateManagedCodexConfig();
-    deactivateManagedCodexAuth();
-    return { stoppedPid: null };
+    if (manageCodexIntegration) {
+      deactivateManagedCodexConfig();
+      deactivateManagedCodexAuth();
+    }
+    setServiceRunMode(null);
+    return { stoppedPid: null, codexIntegrationPreserved: !manageCodexIntegration };
   }
 
   if (hasLaunchAgent) {
@@ -1399,8 +1428,11 @@ export function stopManagedService(): { stoppedPid: number | null } {
     fs.rmSync(getPidPath(), { force: true });
   }
 
-  deactivateManagedCodexConfig();
-  deactivateManagedCodexAuth();
+  if (manageCodexIntegration) {
+    deactivateManagedCodexConfig();
+    deactivateManagedCodexAuth();
+  }
+  setServiceRunMode(null);
 
-  return { stoppedPid: pid };
+  return { stoppedPid: pid, codexIntegrationPreserved: !manageCodexIntegration };
 }

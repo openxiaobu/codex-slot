@@ -222,25 +222,29 @@ function registerRuntimeCommands(program: Command): void {
     .command("start")
     .description(bi("后台启动本地代理服务", "Start the local proxy in background"))
     .option("--port <port>", bi("监听端口；会同步写入本地配置", "Listen port and save it to local config"))
+    .option("--proxy-only", bi("仅启动代理，不接管主 Codex 配置与登录态", "Start only the proxy without managing main Codex config or auth"))
     .addHelpText(
       "after",
       [
         "",
         `${bi("说明", "Notes")}:`,
         `  ${bi(
-          "start 会自动接管 `~/.codex/config.toml`；默认优先使用 4399，冲突时自动顺延；指定端口时会写入该端口；stop 会恢复接管前内容。",
-          "`start` will manage `~/.codex/config.toml` automatically; it prefers 4399 by default, switches to the next free port on conflict, writes the specified port when provided, and `stop` restores the previous content."
+          "start 默认会接管 `~/.codex/config.toml`；--proxy-only 只启动代理，不接管主 Codex 配置与登录态；默认优先使用 4399，冲突时自动顺延。",
+          "`start` manages `~/.codex/config.toml` by default; `--proxy-only` starts only the proxy without managing main Codex config or auth; port 4399 is preferred and conflicts are handled automatically."
         )}`,
       ].join("\n")
     )
-    .action(async (options: { port?: string }) => {
-      await handleStart(options.port);
+    .action(async (options: { port?: string; proxyOnly?: boolean }) => {
+      await handleStart(options.port, options.proxyOnly ?? false);
     });
 
   program
     .command("stop")
-    .description(bi("停止后台代理服务并恢复 codex 配置", "Stop the proxy and restore Codex config"))
-    .action(handleStop);
+    .description(bi("停止后台代理服务", "Stop the proxy"))
+    .option("--proxy-only", bi("仅停止代理，不清理或恢复主 Codex 配置与登录态", "Stop only the proxy without cleaning or restoring main Codex config or auth"))
+    .action((options: { proxyOnly?: boolean }) => {
+      handleStop(options.proxyOnly ?? false);
+    });
 }
 
 /**
