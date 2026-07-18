@@ -25,22 +25,19 @@ import type {
 const USAGE_CACHE_TTL_MS = 60 * 1000;
 const inflightUsageRefreshes = new Map<string, Promise<void>>();
 
+interface UsageWindow {
+  used_percent?: number;
+  reset_at?: number;
+  reset_after_seconds?: number;
+  limit_window_seconds?: number;
+}
+
 interface WhamUsageResponse {
   plan_type?: string | null;
   rate_limit?: {
     limit_reached?: boolean;
-    primary_window?: {
-      used_percent?: number;
-      reset_at?: number;
-      reset_after_seconds?: number;
-      limit_window_seconds?: number;
-    };
-    secondary_window?: {
-      used_percent?: number;
-      reset_at?: number;
-      reset_after_seconds?: number;
-      limit_window_seconds?: number;
-    };
+    primary_window?: UsageWindow;
+    secondary_window?: UsageWindow;
   };
   credits?: {
     has_credits?: boolean;
@@ -66,6 +63,30 @@ function normalizeResetAt(value?: number, resetAfterSeconds?: number): number | 
   }
 
   return null;
+}
+
+/**
+ * 按 ChatGPT 返回的额度窗口数量映射 cslot 的短周期与周额度字段。
+ *
+ * @param rateLimit ChatGPT 返回的额度窗口；窗口可能缺失，且 primary/secondary 的位置不保证代表固定周期。
+ * @returns cslot 使用的额度字段；单窗口记为周额度，双窗口沿用 primary 为短周期、secondary 为周额度的语义，不存在对应窗口时返回 `null`。
+ * @throws 此方法不会主动抛出异常；无效或缺失的重置时间会被归一化为 `null`。
+ */
+export function mapUsageWindows(rateLimit?: WhamUsageResponse["rate_limit"]): Pick<UsageRefreshResult,
+  "fiveHourUsedPercent" | "fiveHourResetAt" | "weeklyUsedPercent" | "weeklyResetAt"> {
+  const primaryWindow = rateLimit?.primary_window;
+  const secondaryWindow = rateLimit?.secondary_window;
+
+  // 当前只有周额度时上游会把唯一窗口放在 primary，双窗口时才保留原来的主次语义。
+  const fiveHourWindow = primaryWindow && secondaryWindow ? primaryWindow : undefined;
+  const weeklyWindow = secondaryWindow ?? primaryWindow;
+
+  return {
+    fiveHourUsedPercent: fiveHourWindow?.used_percent ?? null,
+    fiveHourResetAt: normalizeResetAt(fiveHourWindow?.reset_at, fiveHourWindow?.reset_after_seconds),
+    weeklyUsedPercent: weeklyWindow?.used_percent ?? null,
+    weeklyResetAt: normalizeResetAt(weeklyWindow?.reset_at, weeklyWindow?.reset_after_seconds)
+  };
 }
 
 /**
@@ -225,20 +246,12 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
   const primary = resolvePrimaryRegistryAccount(account.codex_home);
   const email = primary?.email ?? account.email ?? undefined;
   const plan = payload.plan_type ?? primary?.plan ?? "-";
+  const usageWindows = mapUsageWindows(payload.rate_limit);
   const result: UsageRefreshResult = {
     accountId: account.id,
     email,
     plan,
-    fiveHourUsedPercent: payload.rate_limit?.primary_window?.used_percent ?? null,
-    fiveHourResetAt: normalizeResetAt(
-      payload.rate_limit?.primary_window?.reset_at,
-      payload.rate_limit?.primary_window?.reset_after_seconds
-    ),
-    weeklyUsedPercent: payload.rate_limit?.secondary_window?.used_percent ?? null,
-    weeklyResetAt: normalizeResetAt(
-      payload.rate_limit?.secondary_window?.reset_at,
-      payload.rate_limit?.secondary_window?.reset_after_seconds
-    ),
+    ...usageWindows,
     refreshedAt: new Date().toISOString()
   };
 
