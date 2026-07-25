@@ -10,6 +10,7 @@
 - Manage multiple accounts or workspaces as separate slots
 - Refresh and cache the latest usage from the official usage endpoint
 - Expose a local provider endpoint for Codex
+- Support Codex App Voice through WebRTC call creation and sideband WebSocket proxying
 - Optionally pin model requests to an OpenAI-compatible relay slot
 - Proxy ChatGPT backend plugin requests through the selected cslot account
 - Apply local block rules for temporary, 5-hour, and weekly limits
@@ -122,6 +123,7 @@ The project is intentionally split by responsibility:
 - `src/status-command.ts`: usage refresh output and interactive toggle UI
 - `src/codex-config.ts`: managed `~/.codex/config.toml` apply/restore logic
 - `src/backend-proxy-service.ts`: ChatGPT backend proxy for Codex plugin/runtime requests
+- `src/voice-proxy-service.ts`, `src/voice-websocket-proxy.ts`, `src/voice-call-binding-store.ts`: Codex Voice HTTP/WebSocket protocol conversion and call-level account affinity
 - `src/relay-proxy-service.ts`, `src/model-proxy-dispatcher.ts`, `src/relay-store.ts`: optional OpenAI-compatible relay slots and `/v1/*` model route dispatch
 - `src/account-store.ts`, `src/usage-sync.ts`, `src/scheduler.ts`, `src/status.ts`: core domain and runtime logic
 - `src/text.ts`: shared bilingual text and locale-independent formatting helpers
@@ -163,6 +165,20 @@ Behavior:
 - `requires_openai_auth = true` keeps Codex App treating the local cslot provider as a ChatGPT-authenticated provider, so plugin navigation and trusted plugin runtimes are not disabled as API-key/custom-provider mode
 - `/backend-api/*` requests are forwarded to ChatGPT backend with the current selected account's upstream token; client `Authorization` headers are not forwarded upstream
 
+## Codex App Voice
+
+`codex-slot start` supports Voice started from an empty Codex App task.
+
+Voice uses two linked transports:
+
+- `POST /v1/live` creates the WebRTC call. cslot converts the public multipart request into the ChatGPT backend JSON request and preserves the upstream `Location` call id.
+- `WS /v1/live/<call_id>` proxies the Frameless sideband connection used for realtime control events.
+- Legacy `POST /v1/realtime/calls` and `WS /v1/realtime?call_id=...` shapes remain supported.
+
+The HTTP call and sideband WebSocket are pinned to the same official account. Voice bypasses a selected relay slot because an OpenAI-compatible relay does not imply support for ChatGPT account Voice. If normal Codex scheduling has no candidate because of text quota state, Voice can still try enabled ChatGPT login accounts because Realtime availability is independent from the Codex text quota.
+
+After upgrading from a version without Voice support, restart the local service with `cslot stop` followed by `cslot start`.
+
 ## OpenAI-compatible Relay Slots
 
 Relay slots are optional model-only exits. They do not replace the official Codex / ChatGPT login state.
@@ -176,7 +192,7 @@ codex-slot current
 
 Behavior:
 
-- `/v1/*` model requests are fixed to the selected relay slot
+- `/v1/*` model requests are fixed to the selected relay slot, except Voice call and sideband routes
 - Relay requests use the relay slot API key; client `Authorization` headers are not forwarded upstream
 - Relay failures are returned directly and do not fall back to official cslot accounts
 - `/backend-api/*` plugin/runtime requests still use the selected official Codex / ChatGPT login state

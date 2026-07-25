@@ -52,7 +52,9 @@ export function buildUpstreamHeaders(
     headers["content-length"] = String(bodyLength);
   }
 
-  headers["user-agent"] = "codex-slot/0.1.1";
+  if (!headers["user-agent"]) {
+    headers["user-agent"] = "codex-slot/0.1.1";
+  }
 
   if (accountIdHeader) {
     headers["chatgpt-account-id"] = accountIdHeader;
@@ -175,7 +177,9 @@ export function buildChatGptBackendHeaders(
     headers.accept = "application/json";
   }
 
-  headers["user-agent"] = "codex-slot/0.1.1";
+  if (!headers["user-agent"]) {
+    headers["user-agent"] = "codex-slot/0.1.1";
+  }
 
   if (typeof bodyLength === "number") {
     headers["content-length"] = String(bodyLength);

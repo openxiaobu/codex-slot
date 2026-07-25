@@ -12,6 +12,7 @@
 - 将多个账号或工作空间作为独立槽位管理
 - 在需要时手动刷新 usage 缓存用于状态展示
 - 通过本地 provider 给 `Codex` 使用
+- 正式支持 Codex App Voice 的 WebRTC call 创建与 sideband WebSocket 代理
 - 可手动将模型请求固定到 OpenAI-compatible 中转槽位
 - 将 Codex 插件运行时的 ChatGPT backend 请求代理到当前 cslot 账号
 - 对临时限流、5 小时限制、周限制做本地熔断
@@ -116,6 +117,7 @@ codex-slot current
 - `src/status-command.ts`：额度刷新输出与交互式启用开关界面
 - `src/codex-config.ts`：受管 `~/.codex/config.toml` 写入与恢复逻辑
 - `src/backend-proxy-service.ts`：Codex 插件与运行时请求使用的 ChatGPT backend 代理
+- `src/voice-proxy-service.ts`、`src/voice-websocket-proxy.ts`、`src/voice-call-binding-store.ts`：Codex Voice HTTP/WebSocket 协议转换与 call 级账号粘性
 - `src/relay-proxy-service.ts`、`src/model-proxy-dispatcher.ts`、`src/relay-store.ts`：可选 OpenAI-compatible 中转槽位与 `/v1/*` 模型请求分发
 - `src/account-store.ts`、`src/usage-sync.ts`、`src/scheduler.ts`、`src/status.ts`：核心领域与运行时逻辑
 - `src/text.ts`：共享的中英双语文本与去 locale 化格式化工具
@@ -161,6 +163,20 @@ wire_api = "responses"
 - 如果不指定端口，会优先尝试 `4399`，冲突时自动顺延到下一个空闲端口，并把实际启动端口写入 `~/.cslot/config.yaml` 与受管 provider 配置
 - `/backend-api/*` 请求会透传到 ChatGPT backend，并由 cslot 内部替换为当前调度账号的上游 token；客户端传入的 `Authorization` 不会继续透传到上游
 
+## Codex App Voice
+
+执行 `codex-slot start` 后，可以从 Codex App 的空任务启动 Voice。
+
+Voice 由两条关联链路组成：
+
+- `POST /v1/live` 创建 WebRTC call。cslot 会把公共 API 的 multipart 请求转换为 ChatGPT backend 所需的 JSON 请求，并保留上游 `Location` 中的 call id。
+- `WS /v1/live/<call_id>` 代理实时控制事件使用的 Frameless sideband 连接。
+- 同时兼容旧版 `POST /v1/realtime/calls` 和 `WS /v1/realtime?call_id=...` 形态。
+
+HTTP call 与后续 sideband WebSocket 会固定使用同一个官方账号。Voice 不跟随当前 relay slot，因为 OpenAI-compatible 中转并不代表支持 ChatGPT 账号 Voice。即使普通 Codex 调度因文本额度状态暂时没有候选，Voice 仍会兜底尝试已启用的 ChatGPT 登录账号，因为 Realtime 可用性与 Codex 文本额度相互独立。
+
+从不支持 Voice 的旧版本升级后，需要执行 `cslot stop`，再执行 `cslot start` 重启本地服务。
+
 ## OpenAI-compatible 中转槽位
 
 中转槽位只作为模型请求出口，不替代官方 Codex / ChatGPT 登录态。
@@ -174,7 +190,7 @@ cslot current
 
 行为规则：
 
-- `/v1/*` 模型请求固定走当前选择的中转槽位
+- `/v1/*` 模型请求固定走当前选择的中转槽位，但 Voice call 与 sideband 路由除外
 - 中转请求使用 relay slot 自己的 API key；客户端传入的 `Authorization` 不会透传到上游
 - 中转失败会直接返回，不会自动回退到官方 cslot 账号
 - `/backend-api/*` 插件与运行时请求仍然使用当前选择的官方 Codex / ChatGPT 登录态

@@ -6,6 +6,9 @@ import { proxyModelWithRoute } from "./model-proxy-dispatcher";
 import { collectAccountStatuses } from "./status";
 import { pickBestAccount } from "./scheduler";
 import { refreshAccountUsage } from "./usage-sync";
+import { VoiceCallBindingStore } from "./voice-call-binding-store";
+import { createVoiceProxyService } from "./voice-proxy-service";
+import { createVoiceWebSocketProxy } from "./voice-websocket-proxy";
 
 interface ProxyReply {
   raw: NodeJS.WritableStream & {
@@ -119,6 +122,16 @@ export async function startServer(port: number): Promise<void> {
     logger: false,
     bodyLimit: Math.floor(config.server.body_limit_mb * 1024 * 1024)
   });
+  const voiceCallBindings = new VoiceCallBindingStore();
+  const { proxyVoiceCall } = createVoiceProxyService(voiceCallBindings);
+  const voiceWebSocketProxy = createVoiceWebSocketProxy(
+    app.server,
+    voiceCallBindings
+  );
+
+  app.addHook("onClose", async () => {
+    voiceWebSocketProxy.close();
+  });
 
   app.get("/health", async () => {
     return { ok: true };
@@ -147,6 +160,43 @@ export async function startServer(port: number): Promise<void> {
   ) => {
     const requestBody = await readRawRequestBody(request.body);
     const result = await proxyModelWithRoute({
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body: requestBody
+    });
+
+    if (result.type === "send") {
+      reply.code(result.statusCode);
+      for (const [headerName, headerValue] of Object.entries(result.headers ?? {})) {
+        reply.header(headerName, headerValue);
+      }
+      reply.send(result.payload);
+      return;
+    }
+
+    await streamProxyResponse(reply, result);
+  };
+
+  /**
+   * 处理 Voice call HTTP 创建请求，并保留后续 sideband 所需的账号绑定。
+   *
+   * @param request Fastify 提供的原始请求信息。
+   * @param reply 当前请求对应的 Fastify reply。
+   * @returns Promise，在响应发送或流式透传结束后完成。
+   * @throws 当读取本地请求流失败时透传底层 I/O 错误。
+   */
+  const voiceProxyHandler = async (
+    request: {
+      method: string;
+      url: string;
+      headers: IncomingHttpHeaders;
+      body?: NodeJS.ReadableStream;
+    },
+    reply: ProxyReply
+  ) => {
+    const requestBody = await readRawRequestBody(request.body);
+    const result = await proxyVoiceCall({
       method: request.method,
       url: request.url,
       headers: request.headers,
@@ -200,6 +250,31 @@ export async function startServer(port: number): Promise<void> {
     proxyApp.addContentTypeParser("*", (request, payload, done) => {
       done(null, payload);
     });
+
+    for (const url of [
+      "/v1/live",
+      "/v1/realtime/calls",
+      "/backend-api/codex/realtime/calls"
+    ]) {
+      proxyApp.route({
+        method: "POST",
+        url,
+        bodyLimit: Number.MAX_SAFE_INTEGER,
+        handler: async (request, reply) => {
+          const body = request.body as NodeJS.ReadableStream | undefined;
+
+          await voiceProxyHandler(
+            {
+              method: request.method,
+              url: request.url,
+              headers: request.headers,
+              body
+            },
+            reply
+          );
+        }
+      });
+    }
 
     proxyApp.route({
       method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
