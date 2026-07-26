@@ -273,6 +273,7 @@ export function createBackendProxyService(overrides?: Partial<BackendProxyDepend
         }
 
         if (upstream.statusCode === 401) {
+          await upstream.body.text();
           try {
             const refreshed = await dependencies.refreshAccountTokens(picked.account.id);
             accessToken = refreshed.tokens?.access_token ?? accessToken;
@@ -292,6 +293,22 @@ export function createBackendProxyService(overrides?: Partial<BackendProxyDepend
             };
             continue;
           }
+        }
+
+        if (upstream.statusCode === 401) {
+          await upstream.body.text();
+          markAccountFailure(dependencies, picked.account.id, "invalid_account_auth", 10 * 60);
+          lastStatusCode = 401;
+          lastErrorPayload = {
+            error: {
+              message: bi(
+                `账号 ${picked.account.id} 刷新 token 后仍未通过 ChatGPT backend 鉴权`,
+                `Account ${picked.account.id} is still unauthorized after ChatGPT backend token refresh`
+              ),
+              type: "invalid_account_auth"
+            }
+          };
+          continue;
         }
 
         const responseHeaders = pickResponseHeaders(upstream.headers);

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { getPidPath, loadConfig } from "./config";
+import { writePrivateFileAtomic } from "./private-file";
 import { startServer } from "./server";
 import { bi } from "./text";
 
@@ -11,7 +12,7 @@ import { bi } from "./text";
  * @throws 当 PID 文件写入失败时抛出文件系统错误。
  */
 function writeCurrentPid(): void {
-  fs.writeFileSync(getPidPath(), `${process.pid}\n`, "utf8");
+  writePrivateFileAtomic(getPidPath(), `${process.pid}\n`);
 }
 
 /**

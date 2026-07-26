@@ -3,6 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
+import { withFileLockSync } from "./file-lock";
+import {
+  ensurePrivateDirectory,
+  ensurePrivateFile,
+  writePrivateFileAtomic
+} from "./private-file";
 import type { CslotConfig, ManagedAccount } from "./types";
 
 const managedAccountSchema = z.object({
@@ -77,9 +83,10 @@ export function getCslotHome(): string {
   const home = path.join(getUserHomeDir(), ".cslot");
 
   // 先创建 cslot 根目录，后续命令统一基于该目录读写状态。
-  fs.mkdirSync(home, { recursive: true });
-  fs.mkdirSync(path.join(home, "homes"), { recursive: true });
-  fs.mkdirSync(path.join(home, "logs"), { recursive: true });
+  ensurePrivateDirectory(home);
+  ensurePrivateDirectory(path.join(home, "homes"));
+  ensurePrivateDirectory(path.join(home, "logs"));
+  ensurePrivateDirectory(path.join(home, "locks"));
 
   return home;
 }
@@ -132,6 +139,74 @@ export function expandHome(input: string): string {
 }
 
 /**
+ * 构造一份完整的默认 cslot 配置。
+ *
+ * @returns 当前版本默认配置；调用方可安全原地修改。
+ * @throws 无显式抛出。
+ */
+function createDefaultConfig(): CslotConfig {
+  return {
+    version: 1,
+    server: {
+      host: "127.0.0.1",
+      port: 4399,
+      body_limit_mb: 512
+    },
+    upstream: {
+      codex_base_url: "https://chatgpt.com/backend-api/codex",
+      chatgpt_base_url: "https://chatgpt.com/backend-api",
+      auth_base_url: "https://auth.openai.com",
+      oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
+    },
+    accounts: [],
+    relay_slots: []
+  };
+}
+
+/**
+ * 读取并归一化配置文件，不主动获取配置锁或回写迁移结果。
+ *
+ * @param configPath 配置文件绝对路径。
+ * @returns 归一化配置及是否需要回写；文件不存在时返回默认配置并标记需要回写。
+ * @throws 当配置内容不是合法 YAML 或不满足 schema 时抛出解析错误。
+ */
+function loadConfigUnlocked(configPath: string): {
+  config: CslotConfig;
+  changed: boolean;
+} {
+  if (!fs.existsSync(configPath)) {
+    return {
+      config: createDefaultConfig(),
+      changed: true
+    };
+  }
+
+  ensurePrivateFile(configPath);
+  const raw = fs.readFileSync(configPath, "utf8");
+  const parsed = raw.trim() ? YAML.parse(raw) : {};
+  const normalized = configSchema.parse(parsed);
+
+  return {
+    config: normalized,
+    changed: JSON.stringify(parsed) !== JSON.stringify(normalized)
+  };
+}
+
+/**
+ * 在调用方已经持有配置锁时原子保存配置。
+ *
+ * @param configPath 配置文件绝对路径。
+ * @param config 待校验并写入的完整配置。
+ * @returns 经过 schema 归一化后的配置对象。
+ * @throws 当 schema 校验或原子写入失败时抛出异常。
+ */
+function saveConfigUnlocked(configPath: string, config: CslotConfig): CslotConfig {
+  const normalized = configSchema.parse(config);
+  writePrivateFileAtomic(configPath, YAML.stringify(normalized));
+  return normalized;
+}
+
+/**
  * 读取 cslot 配置；若配置不存在则返回默认配置。
  *
  * @returns 经过 schema 校验后的配置对象。
@@ -139,40 +214,22 @@ export function expandHome(input: string): string {
  */
 export function loadConfig(): CslotConfig {
   const configPath = getConfigPath();
+  const initial = loadConfigUnlocked(configPath);
 
-  if (!fs.existsSync(configPath)) {
-    const defaultConfig: CslotConfig = {
-      version: 1,
-      server: {
-        host: "127.0.0.1",
-        port: 4399,
-        body_limit_mb: 512
-      },
-      upstream: {
-        codex_base_url: "https://chatgpt.com/backend-api/codex",
-        chatgpt_base_url: "https://chatgpt.com/backend-api",
-        auth_base_url: "https://auth.openai.com",
-        oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
-      },
-      accounts: [],
-      relay_slots: []
-    };
-
-    saveConfig(defaultConfig);
-    return defaultConfig;
+  if (!initial.changed) {
+    return initial.config;
   }
 
-  const raw = fs.readFileSync(configPath, "utf8");
-  const parsed = raw.trim() ? YAML.parse(raw) : {};
-  const normalized = configSchema.parse(parsed);
-  const changed = JSON.stringify(parsed) !== JSON.stringify(normalized);
+  const lockPath = path.join(getCslotHome(), "locks", "config.lock");
 
-  // 当旧配置缺少新字段时，将补全后的配置回写，便于用户直接编辑查看。
-  if (changed) {
-    saveConfig(normalized);
-  }
+  return withFileLockSync(lockPath, () => {
+    const latest = loadConfigUnlocked(configPath);
 
-  return normalized;
+    // 当旧配置缺少新字段时，将补全后的配置回写，便于用户直接编辑查看。
+    return latest.changed
+      ? saveConfigUnlocked(configPath, latest.config)
+      : latest.config;
+  });
 }
 
 /**
@@ -184,8 +241,29 @@ export function loadConfig(): CslotConfig {
  */
 export function saveConfig(config: CslotConfig): void {
   const configPath = getConfigPath();
-  const text = YAML.stringify(config);
-  fs.writeFileSync(configPath, text, "utf8");
+  const lockPath = path.join(getCslotHome(), "locks", "config.lock");
+
+  withFileLockSync(lockPath, () => {
+    saveConfigUnlocked(configPath, config);
+  });
+}
+
+/**
+ * 在跨进程锁内读取最新配置、执行修改并原子保存。
+ *
+ * @param mutator 配置修改函数；只能修改传入的最新配置对象。
+ * @returns 修改后经过 schema 校验并持久化的完整配置。
+ * @throws 当锁等待、配置读取、修改或写入失败时透传异常。
+ */
+export function updateConfig(mutator: (config: CslotConfig) => void): CslotConfig {
+  const configPath = getConfigPath();
+  const lockPath = path.join(getCslotHome(), "locks", "config.lock");
+
+  return withFileLockSync(lockPath, () => {
+    const latest = loadConfigUnlocked(configPath).config;
+    mutator(latest);
+    return saveConfigUnlocked(configPath, latest);
+  });
 }
 
 /**
@@ -205,15 +283,13 @@ export function getManagedHome(accountId: string): string {
  * @returns 更新后的完整配置对象。
  */
 export function upsertAccount(account: ManagedAccount): CslotConfig {
-  const config = loadConfig();
-  const index = config.accounts.findIndex((item) => item.id === account.id);
+  return updateConfig((config) => {
+    const index = config.accounts.findIndex((item) => item.id === account.id);
 
-  if (index >= 0) {
-    config.accounts[index] = account;
-  } else {
-    config.accounts.push(account);
-  }
-
-  saveConfig(config);
-  return config;
+    if (index >= 0) {
+      config.accounts[index] = account;
+    } else {
+      config.accounts.push(account);
+    }
+  });
 }

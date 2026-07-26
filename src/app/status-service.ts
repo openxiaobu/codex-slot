@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig } from "../config";
+import { updateConfig } from "../config";
 import { pickBestAccount } from "../scheduler";
 import {
   collectAccountStatuses,
@@ -75,16 +75,14 @@ export function getStatusSnapshot(): StatusSnapshot {
 export function persistAccountEnabledState(
   accounts: Array<{ id: string; enabled: boolean }>
 ): void {
-  const latest = loadConfig();
-
-  for (const account of accounts) {
-    const index = latest.accounts.findIndex((item) => item.id === account.id);
-    if (index >= 0) {
-      latest.accounts[index].enabled = account.enabled;
+  updateConfig((latest) => {
+    for (const account of accounts) {
+      const index = latest.accounts.findIndex((item) => item.id === account.id);
+      if (index >= 0) {
+        latest.accounts[index].enabled = account.enabled;
+      }
     }
-  }
-
-  saveConfig(latest);
+  });
 }
 
 /**
@@ -97,14 +95,12 @@ export function persistAccountEnabledState(
 export function persistRelayEnabledState(
   slots: Array<{ id: string; enabled: boolean }>
 ): void {
-  const latest = loadConfig();
-
-  for (const slot of slots) {
-    const index = latest.relay_slots.findIndex((item) => item.id === slot.id);
-    if (index >= 0) {
-      latest.relay_slots[index].enabled = slot.enabled;
+  updateConfig((latest) => {
+    for (const slot of slots) {
+      const index = latest.relay_slots.findIndex((item) => item.id === slot.id);
+      if (index >= 0) {
+        latest.relay_slots[index].enabled = slot.enabled;
+      }
     }
-  }
-
-  saveConfig(latest);
+  });
 }

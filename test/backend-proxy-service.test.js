@@ -142,6 +142,71 @@ test("backend proxy 在 401 后刷新 token 并重试", async () => {
   assert.deepEqual(sentTokens, ["old-access", "new-access"]);
 });
 
+test("backend proxy 刷新后仍为 401 时不记录成功并切换下一账号", async () => {
+  const sent = [];
+  const blocked = [];
+  const recorded = [];
+  const service = createBackendProxyService(
+    createBaseDependencies({
+      listCandidateAccounts: () => [
+        createCandidate("slot-a"),
+        createCandidate("slot-b")
+      ],
+      readAuthFile: (codexHome) => {
+        const accountId = codexHome.endsWith("slot-b")
+          ? "slot-b-account"
+          : "slot-a-account";
+        return {
+          auth_mode: "chatgpt",
+          tokens: {
+            access_token: `old-${accountId}`,
+            refresh_token: `refresh-${accountId}`,
+            account_id: accountId
+          }
+        };
+      },
+      sendChatGptBackendRequest: async (options) => {
+        sent.push(options.accessToken);
+        return options.accountIdHeader === "slot-b-account"
+          ? createResponse(200, "ok", { "content-type": "application/json" })
+          : createResponse(401, "unauthorized");
+      },
+      refreshAccountTokens: async (accountId) => ({
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: `new-${accountId}`,
+          refresh_token: `refresh-${accountId}`,
+          account_id: `${accountId}-account`
+        }
+      }),
+      setAccountBlock: (accountId, _until, reason) => {
+        blocked.push({ accountId, reason });
+      },
+      recordAccountScheduleSuccess: (accountId) => recorded.push(accountId)
+    })
+  );
+
+  const result = await service.proxyChatGptBackendWithRetry({
+    method: "GET",
+    url: "/backend-api/me",
+    headers: {}
+  });
+
+  assert.equal(result.type, "proxy");
+  assert.deepEqual(sent, [
+    "old-slot-a-account",
+    "new-slot-a",
+    "old-slot-b-account"
+  ]);
+  assert.deepEqual(blocked, [
+    {
+      accountId: "slot-a",
+      reason: "invalid_account_auth"
+    }
+  ]);
+  assert.deepEqual(recorded, ["slot-b"]);
+});
+
 test("backend proxy 透传任意 backend 路由", async () => {
   const sent = [];
   const service = createBackendProxyService(

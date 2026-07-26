@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig } from "./config";
+import { loadConfig, updateConfig } from "./config";
 import { getSelectedModelRoute, setSelectedModelRoute, updateState } from "./state";
 import { bi } from "./text";
 import type { RelaySlot } from "./types";
@@ -36,12 +36,6 @@ export function addRelaySlot(input: {
   baseUrl: string;
   apiKey: string;
 }): RelaySlot {
-  const config = loadConfig();
-
-  if (config.relay_slots.some((item) => item.id === input.name)) {
-    throw new Error(bi(`中转槽位 ${input.name} 已存在`, `Relay slot already exists: ${input.name}`));
-  }
-
   try {
     new URL(input.baseUrl);
   } catch {
@@ -57,8 +51,12 @@ export function addRelaySlot(input: {
     imported_at: new Date().toISOString()
   };
 
-  config.relay_slots.push(slot);
-  saveConfig(config);
+  updateConfig((config) => {
+    if (config.relay_slots.some((item) => item.id === input.name)) {
+      throw new Error(bi(`中转槽位 ${input.name} 已存在`, `Relay slot already exists: ${input.name}`));
+    }
+    config.relay_slots.push(slot);
+  });
   return slot;
 }
 
@@ -70,18 +68,17 @@ export function addRelaySlot(input: {
  * @throws 当配置或状态写入失败时抛出异常。
  */
 export function removeRelaySlot(slotId: string): RelaySlot | null {
-  const config = loadConfig();
-  const index = config.relay_slots.findIndex((item) => item.id === slotId);
+  let removed: RelaySlot | null = null;
 
-  if (index < 0) {
-    return null;
-  }
-
-  const [removed] = config.relay_slots.splice(index, 1);
-  saveConfig(config);
+  updateConfig((config) => {
+    const index = config.relay_slots.findIndex((item) => item.id === slotId);
+    if (index >= 0) {
+      [removed] = config.relay_slots.splice(index, 1);
+    }
+  });
 
   const route = getSelectedModelRoute();
-  if (route.mode === "relay_slot" && route.relay_slot_id === slotId) {
+  if (removed && route.mode === "relay_slot" && route.relay_slot_id === slotId) {
     setSelectedModelRoute({ mode: "auth_pool" });
   }
 
@@ -97,25 +94,24 @@ export function removeRelaySlot(slotId: string): RelaySlot | null {
  * @throws 当旧 slot 不存在、新 slot 已存在或写入失败时抛出异常。
  */
 export function renameRelaySlot(oldName: string, newName: string): RelaySlot {
-  const config = loadConfig();
-  const index = config.relay_slots.findIndex((item) => item.id === oldName);
+  let renamed: RelaySlot | null = null;
 
-  if (index < 0) {
-    throw new Error(bi(`未找到中转槽位 ${oldName}`, `Relay slot not found: ${oldName}`));
-  }
+  updateConfig((config) => {
+    const index = config.relay_slots.findIndex((item) => item.id === oldName);
+    if (index < 0) {
+      throw new Error(bi(`未找到中转槽位 ${oldName}`, `Relay slot not found: ${oldName}`));
+    }
+    if (config.relay_slots.some((item) => item.id === newName)) {
+      throw new Error(bi(`中转槽位 ${newName} 已存在`, `Relay slot already exists: ${newName}`));
+    }
 
-  if (config.relay_slots.some((item) => item.id === newName)) {
-    throw new Error(bi(`中转槽位 ${newName} 已存在`, `Relay slot already exists: ${newName}`));
-  }
-
-  const renamed: RelaySlot = {
-    ...config.relay_slots[index],
-    id: newName,
-    name: newName
-  };
-
-  config.relay_slots[index] = renamed;
-  saveConfig(config);
+    renamed = {
+      ...config.relay_slots[index],
+      id: newName,
+      name: newName
+    };
+    config.relay_slots[index] = renamed;
+  });
 
   updateState((state) => {
     if (
@@ -129,7 +125,7 @@ export function renameRelaySlot(oldName: string, newName: string): RelaySlot {
     }
   });
 
-  return renamed;
+  return renamed!;
 }
 
 /**
@@ -141,19 +137,19 @@ export function renameRelaySlot(oldName: string, newName: string): RelaySlot {
  * @throws 当 slot 不存在或配置写入失败时抛出异常。
  */
 export function setRelaySlotEnabled(slotId: string, enabled: boolean): RelaySlot {
-  const config = loadConfig();
-  const index = config.relay_slots.findIndex((item) => item.id === slotId);
+  let updated: RelaySlot | null = null;
 
-  if (index < 0) {
-    throw new Error(bi(`未找到中转槽位 ${slotId}`, `Relay slot not found: ${slotId}`));
-  }
+  updateConfig((config) => {
+    const index = config.relay_slots.findIndex((item) => item.id === slotId);
+    if (index < 0) {
+      throw new Error(bi(`未找到中转槽位 ${slotId}`, `Relay slot not found: ${slotId}`));
+    }
+    updated = {
+      ...config.relay_slots[index],
+      enabled
+    };
+    config.relay_slots[index] = updated;
+  });
 
-  const updated: RelaySlot = {
-    ...config.relay_slots[index],
-    enabled
-  };
-
-  config.relay_slots[index] = updated;
-  saveConfig(config);
-  return updated;
+  return updated!;
 }

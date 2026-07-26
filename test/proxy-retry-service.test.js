@@ -119,6 +119,69 @@ test("proxy retry service 在 401 后刷新 token 并重试成功", async () => 
   assert.deepEqual(recorded, ["slot-a"]);
 });
 
+test("proxy retry service 刷新后仍为 401 时熔断当前账号并切换下一账号", async () => {
+  const sent = [];
+  const blocked = [];
+  const recorded = [];
+  const service = createProxyRetryService(
+    createBaseDependencies({
+      listCandidateAccounts: () => [
+        createCandidate("slot-a"),
+        createCandidate("slot-b")
+      ],
+      sendCodexRequest: async (options) => {
+        sent.push({
+          token: options.accessToken,
+          accountId: options.accountIdHeader
+        });
+        return options.accountIdHeader === "slot-b-account"
+          ? createResponse(200, "ok", { "content-type": "application/json" })
+          : createResponse(401, "unauthorized");
+      },
+      readAuthFile: (codexHome) => {
+        const accountId = codexHome.endsWith("slot-b")
+          ? "slot-b-account"
+          : "slot-a-account";
+        return {
+          auth_mode: "chatgpt",
+          tokens: {
+            access_token: `old-${accountId}`,
+            refresh_token: `refresh-${accountId}`,
+            account_id: accountId
+          }
+        };
+      },
+      refreshAccountTokens: async (accountId) => ({
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: `new-${accountId}`,
+          refresh_token: `refresh-${accountId}`,
+          account_id: `${accountId}-account`
+        }
+      }),
+      setAccountBlock: (accountId, _until, reason) => {
+        blocked.push({ accountId, reason });
+      },
+      recordAccountScheduleSuccess: (accountId) => recorded.push(accountId)
+    })
+  );
+
+  const result = await service.proxyResponsesWithRetry({}, Buffer.from("{}"));
+
+  assert.equal(result.type, "proxy");
+  assert.deepEqual(
+    sent.map((item) => item.token),
+    ["old-slot-a-account", "new-slot-a", "old-slot-b-account"]
+  );
+  assert.deepEqual(blocked, [
+    {
+      accountId: "slot-a",
+      reason: "invalid_account_auth"
+    }
+  ]);
+  assert.deepEqual(recorded, ["slot-b"]);
+});
+
 test("proxy retry service 在没有候选账号时返回明确错误", async () => {
   const service = createProxyRetryService(
     createBaseDependencies({

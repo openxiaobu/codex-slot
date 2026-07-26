@@ -4,9 +4,15 @@ import {
   expandHome,
   getManagedHome,
   loadConfig,
-  saveConfig,
+  updateConfig,
   upsertAccount
 } from "./config";
+import {
+  copyPrivateFileAtomic,
+  ensurePrivateDirectory,
+  ensurePrivateFile,
+  writePrivateFileAtomic
+} from "./private-file";
 import type {
   CodexAuthFile,
   CodexRegistry,
@@ -38,6 +44,7 @@ export function readRegistry(codexHome: string): CodexRegistry | null {
     return null;
   }
 
+  ensurePrivateFile(registryPath);
   return JSON.parse(fs.readFileSync(registryPath, "utf8")) as CodexRegistry;
 }
 
@@ -54,6 +61,7 @@ export function readAuthFile(codexHome: string): CodexAuthFile | null {
     return null;
   }
 
+  ensurePrivateFile(authPath);
   return JSON.parse(fs.readFileSync(authPath, "utf8")) as CodexAuthFile;
 }
 
@@ -104,7 +112,8 @@ function syncAccountAuthFiles(sourceAccountsDir: string, targetAccountsDir: stri
       }
 
       sourceAuthFiles.add(entry.name);
-      fs.copyFileSync(
+      ensurePrivateFile(path.join(sourceAccountsDir, entry.name));
+      copyPrivateFileAtomic(
         path.join(sourceAccountsDir, entry.name),
         path.join(targetAccountsDir, entry.name)
       );
@@ -147,13 +156,15 @@ export function cloneCodexAuthState(sourceHome: string, targetHome: string): voi
     throw new Error(bi(`来源目录缺少 auth.json: ${sourceAuthPath}`, `Source directory is missing auth.json: ${sourceAuthPath}`));
   }
 
-  fs.mkdirSync(targetCodexDir, { recursive: true });
-  fs.mkdirSync(targetAccountsDir, { recursive: true });
+  ensurePrivateFile(sourceAuthPath);
+  ensurePrivateFile(sourceRegistryPath);
+  ensurePrivateDirectory(targetCodexDir);
+  ensurePrivateDirectory(targetAccountsDir);
 
-  fs.copyFileSync(sourceAuthPath, path.join(targetCodexDir, "auth.json"));
+  copyPrivateFileAtomic(sourceAuthPath, path.join(targetCodexDir, "auth.json"));
 
   if (fs.existsSync(sourceRegistryPath)) {
-    fs.copyFileSync(sourceRegistryPath, targetRegistryPath);
+    copyPrivateFileAtomic(sourceRegistryPath, targetRegistryPath);
   } else {
     fs.rmSync(targetRegistryPath, { force: true });
   }
@@ -192,8 +203,7 @@ export function hasCompleteCodexAuthState(codexHome: string): boolean {
  */
 export function writeAuthFile(codexHome: string, auth: CodexAuthFile): void {
   const authPath = path.join(getCodexDataDir(codexHome), "auth.json");
-  fs.mkdirSync(path.dirname(authPath), { recursive: true });
-  fs.writeFileSync(authPath, `${JSON.stringify(auth, null, 2)}\n`, "utf8");
+  writePrivateFileAtomic(authPath, `${JSON.stringify(auth, null, 2)}\n`);
 }
 
 /**
@@ -230,7 +240,7 @@ export function registerManagedAccount(accountId: string, codexHome?: string): M
   const home = codexHome ? expandHome(codexHome) : getManagedHome(accountId);
 
   // 预先创建账号隔离目录，方便后续直接执行 codex login。
-  fs.mkdirSync(home, { recursive: true });
+  ensurePrivateDirectory(home);
 
   const primary = resolvePrimaryRegistryAccount(home);
   const auth = readAuthFile(home);
@@ -254,16 +264,16 @@ export function registerManagedAccount(accountId: string, codexHome?: string): M
  * @returns 被删除的账号配置；未命中时返回 `null`。
  */
 export function removeManagedAccount(accountId: string): ManagedAccount | null {
-  const config = loadConfig();
-  const index = config.accounts.findIndex((item) => item.id === accountId);
+  let removed: ManagedAccount | null = null;
 
-  if (index < 0) {
-    return null;
-  }
+  updateConfig((config) => {
+    const index = config.accounts.findIndex((item) => item.id === accountId);
+    if (index >= 0) {
+      [removed] = config.accounts.splice(index, 1);
+    }
+  });
 
-  const [removed] = config.accounts.splice(index, 1);
-  saveConfig(config);
-  return removed ?? null;
+  return removed;
 }
 
 /**

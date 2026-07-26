@@ -398,6 +398,13 @@ test("默认启动会把实际端口同步到单一 provider 配置", async () =
     assert.doesNotMatch(codexConfig, /experimental_bearer_token/);
     assert.doesNotMatch(codexConfig, /\[model_providers\.cslot\.http_headers\]/);
     assert.doesNotMatch(codexConfig, /Authorization = "Bearer/);
+    if (process.platform !== "win32") {
+      const cslotDir = path.join(homeDir, ".cslot");
+      assert.equal(fs.statSync(path.join(cslotDir, "config.yaml")).mode & 0o777, 0o600);
+      assert.equal(fs.statSync(path.join(cslotDir, "state.json")).mode & 0o777, 0o600);
+      assert.equal(fs.statSync(path.join(cslotDir, "cslot.pid")).mode & 0o777, 0o600);
+      assert.equal(fs.statSync(path.join(cslotDir, "logs", "service.log")).mode & 0o777, 0o600);
+    }
 
     if (process.platform === "darwin" && process.env.CSLOT_DISABLE_LAUNCHD !== "1") {
       const plistPaths = listLaunchAgentPlists(homeDir);
@@ -554,6 +561,137 @@ test("start 优先使用状态面板手动选择的 Codex App 登录态账号", 
     assert.equal(auth.tokens.account_id, "slot-b-account-id");
   } finally {
     await runCli(homeDir, ["stop"]).catch(() => {});
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("start 遇到失效手动登录态选择时不会改写主 Codex 配置与认证文件", async () => {
+  const homeDir = createIsolatedHome();
+  const codexDir = path.join(homeDir, ".codex");
+  const configPath = path.join(codexDir, "config.toml");
+  const authPath = path.join(codexDir, "auth.json");
+  const originalConfig = 'model_provider = "official"\n';
+  const originalAuth = `${JSON.stringify({ marker: "original-auth" }, null, 2)}\n`;
+  const detachedEnv = {
+    CSLOT_DISABLE_LAUNCHD: "1",
+    CSLOT_DISABLE_SCHTASKS: "1",
+    CSLOT_DISABLE_SYSTEMD: "1",
+    CSLOT_DISABLE_WIN_STARTUP: "1"
+  };
+
+  prepareManualAuthSelectionFixture(homeDir);
+  const statePath = path.join(homeDir, ".cslot", "state.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.selected_codex_auth_account_id = "missing-slot";
+  fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  fs.mkdirSync(codexDir, { recursive: true });
+  fs.writeFileSync(configPath, originalConfig, "utf8");
+  fs.writeFileSync(authPath, originalAuth, "utf8");
+
+  try {
+    await assert.rejects(
+      runCli(homeDir, ["start"], detachedEnv),
+      /手动选择的 Codex App 登录态账号不存在/
+    );
+    assert.equal(fs.readFileSync(configPath, "utf8"), originalConfig);
+    assert.equal(fs.readFileSync(authPath, "utf8"), originalAuth);
+    assert.equal(fs.existsSync(path.join(homeDir, ".cslot", "cslot.pid")), false);
+  } finally {
+    await runCli(homeDir, ["stop", "--proxy-only"], detachedEnv).catch(() => {});
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("start 在子进程启动失败时精确恢复主 Codex 文件、端口与接管状态", async () => {
+  const homeDir = createIsolatedHome();
+  const codexDir = path.join(homeDir, ".codex");
+  const accountsDir = path.join(codexDir, "accounts");
+  const configPath = path.join(codexDir, "config.toml");
+  const authPath = path.join(codexDir, "auth.json");
+  const registryPath = path.join(accountsDir, "registry.json");
+  const accountAuthPath = path.join(accountsDir, "original.auth.json");
+  const hookPath = path.join(homeDir, "fail-serve.cjs");
+  const originalConfig = 'model_provider = "official"\n[model_providers.official]\nname = "official"\n';
+  const originalAuth = `${JSON.stringify({ marker: "original-auth" }, null, 2)}\n`;
+  const originalRegistry = `${JSON.stringify({ marker: "original-registry" }, null, 2)}\n`;
+  const originalAccountAuth = `${JSON.stringify({ marker: "original-account-auth" }, null, 2)}\n`;
+
+  prepareManualAuthSelectionFixture(homeDir);
+  fs.mkdirSync(accountsDir, { recursive: true });
+  fs.writeFileSync(configPath, originalConfig, "utf8");
+  fs.writeFileSync(authPath, originalAuth, "utf8");
+  fs.writeFileSync(registryPath, originalRegistry, "utf8");
+  fs.writeFileSync(accountAuthPath, originalAccountAuth, "utf8");
+  fs.writeFileSync(
+    hookPath,
+    'if (process.argv.some((value) => String(value).endsWith("serve.js"))) process.exit(23);\n',
+    "utf8"
+  );
+
+  const detachedEnv = {
+    CSLOT_DISABLE_LAUNCHD: "1",
+    CSLOT_DISABLE_SCHTASKS: "1",
+    CSLOT_DISABLE_SYSTEMD: "1",
+    CSLOT_DISABLE_WIN_STARTUP: "1",
+    NODE_OPTIONS: `--require=${hookPath}`
+  };
+
+  try {
+    await assert.rejects(
+      runCli(homeDir, ["start"], detachedEnv),
+      /后台服务启动失败|service failed to start/
+    );
+
+    assert.equal(fs.readFileSync(configPath, "utf8"), originalConfig);
+    assert.equal(fs.readFileSync(authPath, "utf8"), originalAuth);
+    assert.equal(fs.readFileSync(registryPath, "utf8"), originalRegistry);
+    assert.equal(fs.readFileSync(accountAuthPath, "utf8"), originalAccountAuth);
+    assert.equal(readCslotConfig(homeDir).server.port, 4399);
+    const state = JSON.parse(
+      fs.readFileSync(path.join(homeDir, ".cslot", "state.json"), "utf8")
+    );
+    assert.equal(state.managed_codex_config, null);
+    assert.equal(state.managed_codex_auth, null);
+    assert.equal(state.service_run_mode, null);
+    assert.equal(state.selected_codex_auth_account_id, "slot-b");
+    assert.equal(fs.existsSync(path.join(homeDir, ".cslot", "cslot.pid")), false);
+  } finally {
+    await runCli(homeDir, ["stop", "--proxy-only"], detachedEnv).catch(() => {});
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("服务运行中再次 start --port 会保存下次启动端口且不要求端口当前可用", async () => {
+  const homeDir = createIsolatedHome();
+  const detachedEnv = {
+    CSLOT_DISABLE_LAUNCHD: "1",
+    CSLOT_DISABLE_SCHTASKS: "1",
+    CSLOT_DISABLE_SYSTEMD: "1",
+    CSLOT_DISABLE_WIN_STARTUP: "1"
+  };
+  const { server: occupiedServer, port: occupiedPort } = await startUpstreamServer((_req, res) => {
+    res.statusCode = 200;
+    res.end("occupied");
+  });
+
+  try {
+    const { stdout } = await runCli(homeDir, ["start", "--proxy-only"], detachedEnv);
+    const portMatch = stdout.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+    assert.ok(portMatch);
+    await waitForHealth(Number(portMatch[1]));
+
+    const { stdout: secondStdout } = await runCli(
+      homeDir,
+      ["start", "--port", String(occupiedPort), "--proxy-only"],
+      detachedEnv
+    );
+
+    assert.match(secondStdout, /已将新端口写入配置|new port has been saved/i);
+    assert.equal(readCslotConfig(homeDir).server.port, occupiedPort);
+    await waitForHealth(Number(portMatch[1]));
+  } finally {
+    await runCli(homeDir, ["stop", "--proxy-only"], detachedEnv).catch(() => {});
+    await closeServer(occupiedServer);
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });

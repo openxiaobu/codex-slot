@@ -5,11 +5,43 @@ import { execFileSync, spawn } from "node:child_process";
 import { request } from "undici";
 import { listAccounts } from "./account-service";
 import { hasCompleteCodexAuthState } from "../account-store";
-import { getSelectedCodexAuthAccountId, getServiceRunMode, setServiceRunMode } from "../state";
-import { applyManagedCodexConfig, deactivateManagedCodexConfig } from "../codex-config";
-import { applyManagedCodexAuth, deactivateManagedCodexAuth } from "../codex-auth";
+import {
+  getManagedCodexAuthState,
+  getManagedCodexConfigState,
+  getSelectedCodexAuthAccountId,
+  getServiceRunMode,
+  setServiceRunMode,
+  updateState
+} from "../state";
+import {
+  applyManagedCodexConfig,
+  captureCodexConfigSnapshot,
+  deactivateManagedCodexConfig,
+  restoreCodexConfigSnapshot,
+  type CodexConfigSnapshot
+} from "../codex-config";
+import {
+  applyManagedCodexAuth,
+  captureCodexAuthSnapshot,
+  deactivateManagedCodexAuth,
+  restoreCodexAuthSnapshot,
+  type CodexAuthSnapshot
+} from "../codex-auth";
 import { parsePort } from "../cli-helpers";
-import { getCslotHome, getPidPath, getServiceLogPath, getUserHomeDir, loadConfig, saveConfig } from "../config";
+import {
+  getCslotHome,
+  getPidPath,
+  getServiceLogPath,
+  getUserHomeDir,
+  loadConfig,
+  updateConfig
+} from "../config";
+import { withFileLock, withFileLockSync } from "../file-lock";
+import {
+  ensurePrivateDirectory,
+  ensurePrivateFile,
+  PRIVATE_FILE_MODE
+} from "../private-file";
 import { isProcessRunning, terminateProcess } from "../process-utils";
 import type { ManagedAccount, ServiceRunMode } from "../types";
 
@@ -25,6 +57,15 @@ interface StartManagedServiceOptions {
 
 interface StopManagedServiceOptions {
   preserveCodexIntegration?: boolean;
+}
+
+interface StartRollbackSnapshot {
+  previousPort: number;
+  previousRunMode: ServiceRunMode | null;
+  previousManagedConfig: ReturnType<typeof getManagedCodexConfigState>;
+  previousManagedAuth: ReturnType<typeof getManagedCodexAuthState>;
+  codexConfig: CodexConfigSnapshot | null;
+  codexAuth: CodexAuthSnapshot | null;
 }
 
 /**
@@ -51,6 +92,7 @@ export function getRunningPid(): number | null {
     return null;
   }
 
+  ensurePrivateFile(pidPath);
   const raw = fs.readFileSync(pidPath, "utf8").trim();
   const pid = Number(raw);
 
@@ -1063,13 +1105,16 @@ async function waitForManagedServiceReady(
  * 在启动失败时终止残留子进程，并恢复启动前的本地配置与 Codex 接管状态。
  *
  * @param pid 可能已创建的子进程 PID。
- * @param previousConfig 启动前的原始配置快照。
- * @param manageCodexIntegration 本次启动是否接管了主 Codex 配置与登录态；纯代理模式必须为 `false`。
- * @param previousRunMode 启动前记录的服务运行模式；回滚时原样恢复。
+ * @param snapshot 启动前捕获的端口、state 与主 Codex 文件快照。
+ * @param manager 本次实际创建服务资源的托管方式。
  * @returns 无返回值。
  * @throws 无显式抛出。
  */
-function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<typeof loadConfig>, manageCodexIntegration: boolean, previousRunMode: ServiceRunMode | null): void {
+function rollbackFailedStart(
+  pid: number | null,
+  snapshot: StartRollbackSnapshot,
+  manager: ServiceManagerKind
+): void {
   if (pid && Number.isInteger(pid) && pid > 0) {
     try {
       terminateProcess(pid);
@@ -1080,8 +1125,6 @@ function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<type
 
   fs.rmSync(getPidPath(), { force: true });
   try {
-    const manager = resolveServiceManagerKind();
-
     if (manager === "launchd") {
       stopManagedServiceWithLaunchd();
     } else if (manager === "systemd-user") {
@@ -1094,12 +1137,40 @@ function rollbackFailedStart(pid: number | null, previousConfig: ReturnType<type
   } catch {
     // 回滚阶段以尽力清理为主，不覆盖原始启动异常。
   }
-  saveConfig(previousConfig);
-  if (manageCodexIntegration) {
-    deactivateManagedCodexConfig();
-    deactivateManagedCodexAuth();
+
+  try {
+    updateConfig((config) => {
+      config.server.port = snapshot.previousPort;
+    });
+  } catch {
+    // 继续恢复主 Codex 文件与 state，避免单个本地配置错误中断其余步骤。
   }
-  setServiceRunMode(previousRunMode);
+
+  if (snapshot.codexConfig) {
+    try {
+      restoreCodexConfigSnapshot(snapshot.codexConfig);
+    } catch {
+      // 回滚阶段不覆盖原始启动异常。
+    }
+  }
+
+  if (snapshot.codexAuth) {
+    try {
+      restoreCodexAuthSnapshot(snapshot.codexAuth);
+    } catch {
+      // 回滚阶段不覆盖原始启动异常。
+    }
+  }
+
+  try {
+    updateState((state) => {
+      state.managed_codex_config = snapshot.previousManagedConfig;
+      state.managed_codex_auth = snapshot.previousManagedAuth;
+      state.service_run_mode = snapshot.previousRunMode;
+    });
+  } catch {
+    // 回滚阶段不覆盖原始启动异常。
+  }
 }
 
 /**
@@ -1139,22 +1210,6 @@ function resolveManagedAuthAccount(): ManagedAccount | null {
         hasCompleteCodexAuthState(account.codex_home)
     ) ?? null
   );
-}
-
-/**
- * 将主 `~/.codex` 登录态切换到当前受管账号，供 `codex_apps` 等依赖主登录态的链路复用。
- *
- * @returns 实际接管的账号；若没有合适账号则返回 `null`。
- * @throws 当目标账号目录缺少完整登录态时抛出异常。
- */
-function applyManagedAuthIfPossible(): ManagedAccount | null {
-  const account = resolveManagedAuthAccount();
-  if (!account) {
-    return null;
-  }
-
-  applyManagedCodexAuth(account.codex_home, { sourceAccountId: account.id });
-  return account;
 }
 
 /**
@@ -1243,7 +1298,9 @@ async function startDetachedManagedService(port: number, logPath: string): Promi
     return await startHiddenWindowsManagedService(port, logPath);
   }
 
-  const logFd = fs.openSync(logPath, "a");
+  ensurePrivateDirectory(path.dirname(logPath));
+  const logFd = fs.openSync(logPath, "a", PRIVATE_FILE_MODE);
+  ensurePrivateFile(logPath);
   const serveEntrypoint = resolveServeEntrypoint();
   const child = spawn(serveEntrypoint.command, [...serveEntrypoint.args, "--port", String(port)], {
     detached: true,
@@ -1280,24 +1337,57 @@ export async function startManagedService(portOverride?: string, options?: Start
   manager: ServiceManagerKind;
   runMode: ServiceRunMode;
 }> {
+  const lockPath = path.join(getCslotHome(), "locks", "lifecycle.lock");
+
+  return await withFileLock(lockPath, async () => {
+    return await startManagedServiceUnlocked(portOverride, options);
+  });
+}
+
+/**
+ * 在调用方已经持有生命周期锁时启动后台服务。
+ *
+ * @param portOverride 可选端口文本；服务未运行时校验占用，已运行时仅保存为下次启动端口。
+ * @param options 启动选项；可选择只启动代理而不接管主 Codex 文件。
+ * @returns 启动结果，包含运行状态、PID、端口、托管方式与运行模式。
+ * @throws 当账号校验、端口解析、主文件接管或服务启动失败时抛出异常，并先执行回滚。
+ */
+async function startManagedServiceUnlocked(
+  portOverride?: string,
+  options?: StartManagedServiceOptions
+): Promise<{
+  alreadyRunning: boolean;
+  pid: number;
+  port: number;
+  logPath: string;
+  autoSwitched: boolean;
+  manager: ServiceManagerKind;
+  runMode: ServiceRunMode;
+}> {
   const config = loadConfig();
-  const previousConfig = structuredClone(config);
   const previousRunMode = getServiceRunMode();
   const manageCodexIntegration = options?.manageCodexIntegration ?? true;
   const requestedRunMode: ServiceRunMode = manageCodexIntegration ? "codex_managed" : "proxy_only";
-  const { port, autoSwitched } = await resolveStartPort(config.server.host, portOverride);
   const manager = resolveServiceManagerKind();
   const runningPid = getRunningPid();
 
   if (runningPid) {
+    let savedPort = config.server.port;
+    if (portOverride) {
+      savedPort = parsePort(portOverride);
+      updateConfig((latest) => {
+        latest.server.port = savedPort;
+      });
+    }
+
     if (manager === "win-startup" && !hasWindowsStartupEntry()) {
-      installWindowsStartupEntry(config.server.port);
+      installWindowsStartupEntry(savedPort);
     }
 
     return {
       alreadyRunning: true,
       pid: runningPid,
-      port: config.server.port,
+      port: savedPort,
       logPath: getServiceLogPath(),
       autoSwitched: false,
       manager,
@@ -1305,75 +1395,73 @@ export async function startManagedService(portOverride?: string, options?: Start
     };
   }
 
-  if (config.server.port !== port) {
-    config.server.port = port;
-    saveConfig(config);
-  }
-
-  if (manageCodexIntegration) {
-    applyManagedCodexConfig(undefined, { config });
-    applyManagedAuthIfPossible();
-  }
-
+  const { port, autoSwitched } = await resolveStartPort(config.server.host, portOverride);
+  const managedAuthAccount = manageCodexIntegration ? resolveManagedAuthAccount() : null;
+  const rollbackSnapshot: StartRollbackSnapshot = {
+    previousPort: config.server.port,
+    previousRunMode,
+    previousManagedConfig: getManagedCodexConfigState(),
+    previousManagedAuth: getManagedCodexAuthState(),
+    codexConfig: manageCodexIntegration ? captureCodexConfigSnapshot() : null,
+    codexAuth:
+      manageCodexIntegration && managedAuthAccount
+        ? captureCodexAuthSnapshot()
+        : null
+  };
   const logPath = getServiceLogPath();
+  ensurePrivateDirectory(path.dirname(logPath));
+  const logFileDescriptor = fs.openSync(logPath, "a", PRIVATE_FILE_MODE);
+  fs.closeSync(logFileDescriptor);
+  ensurePrivateFile(logPath);
   let childPid: number | null = null;
   let actualManager = manager;
 
-  if (manager === "launchd") {
-    try {
-      childPid = await startManagedServiceWithLaunchd(port, logPath);
-    } catch (error) {
-      rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
-      throw error;
-    }
-  } else if (manager === "systemd-user") {
-    try {
-      childPid = await startManagedServiceWithSystemdUser(port, logPath);
-    } catch (error) {
-      rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
-      throw error;
-    }
-  } else if (manager === "schtasks") {
-    try {
-      childPid = await startManagedServiceWithSchtasks(port, logPath);
-    } catch (error) {
-      schtasksAvailability = false;
-
-      try {
-        stopManagedServiceWithSchtasks();
-      } catch {
-        // 回退前先尽力清理半成品计划任务。
-      }
-
-      try {
-        childPid = await startManagedServiceWithWindowsStartup(port, logPath);
-        actualManager = "win-startup";
-      } catch (fallbackError) {
-        rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
-        throw fallbackError;
-      }
-    }
-  } else if (manager === "win-startup") {
-    try {
-      childPid = await startManagedServiceWithWindowsStartup(port, logPath);
-    } catch (error) {
-      rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
-      throw error;
-    }
-  } else {
-    try {
-      childPid = await startDetachedManagedService(port, logPath);
-    } catch (error) {
-      rollbackFailedStart(null, previousConfig, manageCodexIntegration, previousRunMode);
-      throw error;
-    }
-  }
-
   try {
+    let startConfig = config;
+    if (config.server.port !== port) {
+      startConfig = updateConfig((latest) => {
+        latest.server.port = port;
+      });
+    }
+
+    if (manageCodexIntegration) {
+      applyManagedCodexConfig(undefined, { config: startConfig });
+      if (managedAuthAccount) {
+        applyManagedCodexAuth(managedAuthAccount.codex_home, {
+          sourceAccountId: managedAuthAccount.id
+        });
+      }
+    }
+
+    if (manager === "launchd") {
+      childPid = await startManagedServiceWithLaunchd(port, logPath);
+    } else if (manager === "systemd-user") {
+      childPid = await startManagedServiceWithSystemdUser(port, logPath);
+    } else if (manager === "schtasks") {
+      try {
+        childPid = await startManagedServiceWithSchtasks(port, logPath);
+      } catch {
+        schtasksAvailability = false;
+
+        try {
+          stopManagedServiceWithSchtasks();
+        } catch {
+          // 回退前先尽力清理半成品计划任务。
+        }
+
+        actualManager = "win-startup";
+        childPid = await startManagedServiceWithWindowsStartup(port, logPath);
+      }
+    } else if (manager === "win-startup") {
+      childPid = await startManagedServiceWithWindowsStartup(port, logPath);
+    } else {
+      childPid = await startDetachedManagedService(port, logPath);
+    }
+
     await waitForManagedServiceReady(config.server.host, port, childPid);
     setServiceRunMode(requestedRunMode);
   } catch (error) {
-    rollbackFailedStart(childPid, previousConfig, manageCodexIntegration, previousRunMode);
+    rollbackFailedStart(childPid, rollbackSnapshot, actualManager);
     throw error;
   }
 
@@ -1396,6 +1484,23 @@ export async function startManagedService(portOverride?: string, options?: Start
  * @throws 当进程终止失败时透传底层异常。
  */
 export function stopManagedService(options?: StopManagedServiceOptions): { stoppedPid: number | null; codexIntegrationPreserved: boolean } {
+  const lockPath = path.join(getCslotHome(), "locks", "lifecycle.lock");
+
+  return withFileLockSync(lockPath, () => {
+    return stopManagedServiceUnlocked(options);
+  });
+}
+
+/**
+ * 在调用方已经持有生命周期锁时停止后台服务并执行对称清理。
+ *
+ * @param options 停止选项；可要求保留主 Codex 配置与登录态。
+ * @returns 停止前 PID 与是否保留主 Codex 文件。
+ * @throws 当托管资源清理、进程终止或主 Codex 文件恢复失败时透传异常。
+ */
+function stopManagedServiceUnlocked(
+  options?: StopManagedServiceOptions
+): { stoppedPid: number | null; codexIntegrationPreserved: boolean } {
   const runMode = getServiceRunMode();
   const manageCodexIntegration = options?.preserveCodexIntegration !== true && runMode !== "proxy_only";
   const manager = resolveServiceManagerKind();

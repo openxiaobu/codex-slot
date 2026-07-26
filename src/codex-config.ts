@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { expandHome, getUserHomeDir, loadConfig } from "./config";
+import { ensurePrivateFile, writePrivateFileAtomic } from "./private-file";
 import {
   clearManagedCodexConfigState,
   getManagedCodexConfigState,
@@ -13,6 +14,11 @@ const MODEL_PROVIDER_START_MARKER = "# >>> cslot model_provider >>>";
 const MODEL_PROVIDER_END_MARKER = "# <<< cslot model_provider <<<";
 const PROVIDER_BLOCK_START_MARKER = "# >>> cslot provider:cslot >>>";
 const PROVIDER_BLOCK_END_MARKER = "# <<< cslot provider:cslot <<<";
+
+export interface CodexConfigSnapshot {
+  targetFile: string;
+  content: string | null;
+}
 
 /**
  * 返回默认的 `codex config.toml` 路径。
@@ -32,11 +38,43 @@ export function getDefaultCodexConfigPath(): string {
  * @throws 当目录创建、临时文件写入或重命名失败时抛出文件系统错误。
  */
 function writeFileAtomic(targetFile: string, content: string): void {
-  fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-  const tmpFile = `${targetFile}.tmp-${process.pid}-${Date.now()}`;
+  writePrivateFileAtomic(targetFile, content);
+}
 
-  fs.writeFileSync(tmpFile, content, "utf8");
-  fs.renameSync(tmpFile, targetFile);
+/**
+ * 捕获当前 Codex `config.toml` 的完整内容，供单次 start 失败时精确回滚。
+ *
+ * @param targetPathOrDir 可选配置目录或 `config.toml` 文件路径；未传时使用默认位置。
+ * @returns 目标文件路径与原始内容；文件不存在时 content 为 `null`。
+ * @throws 当目标文件读取或权限迁移失败时抛出文件系统错误。
+ */
+export function captureCodexConfigSnapshot(
+  targetPathOrDir?: string
+): CodexConfigSnapshot {
+  const rawTarget = targetPathOrDir ? expandHome(targetPathOrDir) : getDefaultCodexConfigPath();
+  const targetFile = rawTarget.endsWith(".toml") ? rawTarget : path.join(rawTarget, "config.toml");
+
+  ensurePrivateFile(targetFile);
+  return {
+    targetFile,
+    content: fs.existsSync(targetFile) ? fs.readFileSync(targetFile, "utf8") : null
+  };
+}
+
+/**
+ * 将 Codex `config.toml` 恢复到单次 start 前捕获的完整状态。
+ *
+ * @param snapshot `captureCodexConfigSnapshot` 生成的内存快照。
+ * @returns 无返回值。
+ * @throws 当删除或原子写入目标文件失败时抛出文件系统错误。
+ */
+export function restoreCodexConfigSnapshot(snapshot: CodexConfigSnapshot): void {
+  if (snapshot.content === null) {
+    fs.rmSync(snapshot.targetFile, { force: true });
+    return;
+  }
+
+  writeFileAtomic(snapshot.targetFile, snapshot.content);
 }
 
 /**

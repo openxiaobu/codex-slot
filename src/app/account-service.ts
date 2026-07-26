@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { cloneCodexAuthState, registerManagedAccount, removeManagedAccount } from "../account-store";
-import { expandHome, getManagedHome, getUserHomeDir, loadConfig, saveConfig } from "../config";
+import { expandHome, getManagedHome, getUserHomeDir, loadConfig, updateConfig } from "../config";
 import { loginManagedAccount } from "../login";
 import { findRelaySlot, removeRelaySlot, renameRelaySlot } from "../relay-store";
 import { updateState } from "../state";
@@ -52,6 +52,18 @@ export function removeAccount(slotName: string): ManagedAccount | null {
   const removed = removeManagedAccount(slotName);
 
   if (removed) {
+    updateState((state) => {
+      if (state.selected_codex_auth_account_id === slotName) {
+        state.selected_codex_auth_account_id = null;
+      }
+      delete state.account_blocks[slotName];
+      delete state.usage_cache[slotName];
+      delete state.usage_refresh_errors[slotName];
+      delete state.scheduler_stats[slotName];
+      if (state.managed_codex_auth?.source_account_id === slotName) {
+        state.managed_codex_auth.source_account_id = null;
+      }
+    });
     removeRelaySlot(slotName);
   }
 
@@ -74,7 +86,7 @@ export function listAccounts(): ManagedAccount[] {
  * 业务规则：
  * 1. 若账号 HOME 使用默认槽位目录，则一并重命名目录路径。
  * 2. 若账号 HOME 是自定义路径，则仅更新账号标识，不强改目录。
- * 3. `state.json` 中与账号标识绑定的 usage/block 缓存会同步迁移。
+ * 3. `state.json` 中与账号标识绑定的选择、usage、block、错误与调度状态会同步迁移。
  *
  * @param oldName 原槽位名。
  * @param newName 新槽位名。
@@ -86,45 +98,55 @@ export function renameAccount(oldName: string, newName: string): ManagedAccount 
     throw new Error(bi(`中转槽位 ${newName} 已存在`, `Relay slot already exists: ${newName}`));
   }
 
-  const config = loadConfig();
-  const index = config.accounts.findIndex((item) => item.id === oldName);
-
-  if (index < 0) {
-    throw new Error(bi(`未找到账号 ${oldName}`, `Account not found: ${oldName}`));
-  }
-
-  if (config.accounts.some((item) => item.id === newName)) {
-    throw new Error(bi(`账号 ${newName} 已存在`, `Account already exists: ${newName}`));
-  }
-
-  const currentAccount = config.accounts[index];
   const defaultOldHome = getManagedHome(oldName);
   const defaultNewHome = getManagedHome(newName);
-  let nextHome = currentAccount.codex_home;
+  let movedDefaultHome = false;
+  let renamedAccount: ManagedAccount | null = null;
 
-  if (currentAccount.codex_home === defaultOldHome) {
-    if (fs.existsSync(defaultNewHome)) {
-      throw new Error(bi(`目标槽位目录已存在: ${defaultNewHome}`, `Target slot directory already exists: ${defaultNewHome}`));
-    }
+  try {
+    updateConfig((config) => {
+      const index = config.accounts.findIndex((item) => item.id === oldName);
+      if (index < 0) {
+        throw new Error(bi(`未找到账号 ${oldName}`, `Account not found: ${oldName}`));
+      }
+      if (config.accounts.some((item) => item.id === newName)) {
+        throw new Error(bi(`账号 ${newName} 已存在`, `Account already exists: ${newName}`));
+      }
 
-    // 只有默认槽位目录才一起迁移，避免误移动用户手工指定的 HOME。
-    if (fs.existsSync(defaultOldHome)) {
-      fs.renameSync(defaultOldHome, defaultNewHome);
+      const currentAccount = config.accounts[index];
+      let nextHome = currentAccount.codex_home;
+      if (currentAccount.codex_home === defaultOldHome) {
+        if (fs.existsSync(defaultNewHome)) {
+          throw new Error(bi(`目标槽位目录已存在: ${defaultNewHome}`, `Target slot directory already exists: ${defaultNewHome}`));
+        }
+
+        // 只有默认槽位目录才一起迁移，避免误移动用户手工指定的 HOME。
+        if (fs.existsSync(defaultOldHome)) {
+          fs.renameSync(defaultOldHome, defaultNewHome);
+          movedDefaultHome = true;
+        }
+        nextHome = defaultNewHome;
+      }
+
+      renamedAccount = {
+        ...currentAccount,
+        id: newName,
+        name: newName,
+        codex_home: nextHome
+      };
+      config.accounts[index] = renamedAccount;
+    });
+  } catch (error) {
+    if (movedDefaultHome && fs.existsSync(defaultNewHome) && !fs.existsSync(defaultOldHome)) {
+      fs.renameSync(defaultNewHome, defaultOldHome);
     }
-    nextHome = defaultNewHome;
+    throw error;
   }
 
-  const renamedAccount: ManagedAccount = {
-    ...currentAccount,
-    id: newName,
-    name: newName,
-    codex_home: nextHome
-  };
-
-  config.accounts[index] = renamedAccount;
-  saveConfig(config);
-
   updateState((state) => {
+    if (state.selected_codex_auth_account_id === oldName) {
+      state.selected_codex_auth_account_id = newName;
+    }
     if (state.account_blocks[oldName]) {
       state.account_blocks[newName] = state.account_blocks[oldName];
       delete state.account_blocks[oldName];
@@ -136,9 +158,19 @@ export function renameAccount(oldName: string, newName: string): ManagedAccount 
       };
       delete state.usage_cache[oldName];
     }
+    if (state.usage_refresh_errors[oldName]) {
+      state.usage_refresh_errors[newName] = {
+        ...state.usage_refresh_errors[oldName],
+        accountId: newName
+      };
+      delete state.usage_refresh_errors[oldName];
+    }
     if (state.scheduler_stats[oldName]) {
       state.scheduler_stats[newName] = state.scheduler_stats[oldName];
       delete state.scheduler_stats[oldName];
+    }
+    if (state.managed_codex_auth?.source_account_id === oldName) {
+      state.managed_codex_auth.source_account_id = newName;
     }
   });
 
@@ -146,5 +178,5 @@ export function renameAccount(oldName: string, newName: string): ManagedAccount 
     renameRelaySlot(oldName, newName);
   }
 
-  return renamedAccount;
+  return renamedAccount!;
 }

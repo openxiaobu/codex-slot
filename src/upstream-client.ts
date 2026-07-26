@@ -32,6 +32,7 @@ export function buildUpstreamHeaders(
       normalizedName === "host" ||
       normalizedName === "connection" ||
       normalizedName === "content-length" ||
+      normalizedName === "accept-encoding" ||
       normalizedName === "expect"
     ) {
       continue;
@@ -161,6 +162,7 @@ export function buildChatGptBackendHeaders(
       normalizedName === "host" ||
       normalizedName === "connection" ||
       normalizedName === "content-length" ||
+      normalizedName === "accept-encoding" ||
       normalizedName === "expect"
     ) {
       continue;

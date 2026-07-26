@@ -3,11 +3,21 @@ import path from "node:path";
 import { cloneCodexAuthState, getCodexDataDir } from "./account-store";
 import { getUserHomeDir } from "./config";
 import {
+  ensurePrivateDirectory,
+  ensurePrivateFile,
+  writePrivateFileAtomic
+} from "./private-file";
+import {
   clearManagedCodexAuthState,
   getManagedCodexAuthState,
   setManagedCodexAuthState
 } from "./state";
 import type { ManagedCodexAuthState } from "./types";
+
+export interface CodexAuthSnapshot {
+  targetHome: string;
+  files: Record<string, string>;
+}
 
 /**
  * 返回默认的 Codex HOME 目录。
@@ -36,7 +46,9 @@ function snapshotAccountAuthFiles(codexHome: string): Record<string, string> {
       continue;
     }
 
-    snapshots[entry.name] = fs.readFileSync(path.join(accountsDir, entry.name), "utf8");
+    const authFile = path.join(accountsDir, entry.name);
+    ensurePrivateFile(authFile);
+    snapshots[entry.name] = fs.readFileSync(authFile, "utf8");
   }
 
   return snapshots;
@@ -57,6 +69,8 @@ function buildManagedAuthSnapshot(
   const authPath = path.join(codexDir, "auth.json");
   const registryPath = path.join(codexDir, "accounts", "registry.json");
 
+  ensurePrivateFile(authPath);
+  ensurePrivateFile(registryPath);
   return {
     target_home: targetHome,
     source_account_id: sourceAccountId ?? null,
@@ -79,8 +93,7 @@ function restoreSnapshotFile(targetFile: string, content: string | null): void {
     return;
   }
 
-  fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-  fs.writeFileSync(targetFile, content, "utf8");
+  writePrivateFileAtomic(targetFile, content);
 }
 
 /**
@@ -92,7 +105,7 @@ function restoreSnapshotFile(targetFile: string, content: string | null): void {
  */
 function restoreAccountAuthFiles(targetHome: string, snapshot: ManagedCodexAuthState): void {
   const accountsDir = path.join(getCodexDataDir(targetHome), "accounts");
-  fs.mkdirSync(accountsDir, { recursive: true });
+  ensurePrivateDirectory(accountsDir);
 
   for (const entry of fs.readdirSync(accountsDir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".auth.json")) {
@@ -106,6 +119,92 @@ function restoreAccountAuthFiles(targetHome: string, snapshot: ManagedCodexAuthS
 
   for (const [fileName, content] of Object.entries(snapshot.original_account_auth_files)) {
     restoreSnapshotFile(path.join(accountsDir, fileName), content);
+  }
+}
+
+/**
+ * 捕获主 Codex HOME 当前认证文件集合，供单次 start 失败时精确回滚。
+ *
+ * @param targetHome 需要捕获的 Codex HOME；未传时使用当前用户 HOME。
+ * @returns 认证文件相对路径到原始内容的快照；不存在的文件不会出现在映射中。
+ * @throws 当认证目录或文件读取失败时抛出文件系统错误。
+ */
+export function captureCodexAuthSnapshot(
+  targetHome = getDefaultCodexHome()
+): CodexAuthSnapshot {
+  const codexDir = getCodexDataDir(targetHome);
+  const accountsDir = path.join(codexDir, "accounts");
+  const files: Record<string, string> = {};
+  const fixedFiles = ["auth.json", path.join("accounts", "registry.json")];
+
+  for (const relativePath of fixedFiles) {
+    const targetFile = path.join(codexDir, relativePath);
+    if (fs.existsSync(targetFile)) {
+      ensurePrivateFile(targetFile);
+      files[relativePath] = fs.readFileSync(targetFile, "utf8");
+    }
+  }
+
+  if (fs.existsSync(accountsDir)) {
+    for (const entry of fs.readdirSync(accountsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".auth.json")) {
+        continue;
+      }
+
+      const relativePath = path.join("accounts", entry.name);
+      const targetFile = path.join(codexDir, relativePath);
+      ensurePrivateFile(targetFile);
+      files[relativePath] = fs.readFileSync(targetFile, "utf8");
+    }
+  }
+
+  return {
+    targetHome,
+    files
+  };
+}
+
+/**
+ * 将主 Codex HOME 的认证文件恢复到单次 start 前捕获的精确集合。
+ *
+ * @param snapshot `captureCodexAuthSnapshot` 生成的内存快照。
+ * @returns 无返回值。
+ * @throws 当目录扫描、删除或原子写入失败时抛出文件系统错误。
+ */
+export function restoreCodexAuthSnapshot(snapshot: CodexAuthSnapshot): void {
+  const codexDir = getCodexDataDir(snapshot.targetHome);
+  const accountsDir = path.join(codexDir, "accounts");
+  const authPath = path.join(codexDir, "auth.json");
+  const registryPath = path.join(accountsDir, "registry.json");
+
+  if ("auth.json" in snapshot.files) {
+    writePrivateFileAtomic(authPath, snapshot.files["auth.json"]);
+  } else {
+    fs.rmSync(authPath, { force: true });
+  }
+
+  const registryRelativePath = path.join("accounts", "registry.json");
+  if (registryRelativePath in snapshot.files) {
+    writePrivateFileAtomic(registryPath, snapshot.files[registryRelativePath]);
+  } else {
+    fs.rmSync(registryPath, { force: true });
+  }
+
+  ensurePrivateDirectory(accountsDir);
+  for (const entry of fs.readdirSync(accountsDir, { withFileTypes: true })) {
+    if (
+      entry.isFile() &&
+      entry.name.endsWith(".auth.json") &&
+      !(path.join("accounts", entry.name) in snapshot.files)
+    ) {
+      fs.rmSync(path.join(accountsDir, entry.name), { force: true });
+    }
+  }
+
+  for (const [relativePath, content] of Object.entries(snapshot.files)) {
+    if (relativePath.endsWith(".auth.json")) {
+      writePrivateFileAtomic(path.join(codexDir, relativePath), content);
+    }
   }
 }
 

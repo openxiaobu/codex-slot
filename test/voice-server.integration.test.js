@@ -88,10 +88,11 @@ async function waitForHealth(port) {
  * @param homeDir 测试专用 HOME。
  * @param upstreamPort 假 ChatGPT backend 端口。
  * @param localPort cslot 子进程端口。
+ * @param bodyLimitMb 可选请求体上限，默认使用生产配置值。
  * @returns 无返回值。
  * @throws 当目录或文件写入失败时抛出错误。
  */
-function prepareVoiceHome(homeDir, upstreamPort, localPort) {
+function prepareVoiceHome(homeDir, upstreamPort, localPort, bodyLimitMb = 512) {
   const cslotDir = path.join(homeDir, ".cslot");
   const accountHome = path.join(cslotDir, "homes", "voice-a");
   const accountCodexDir = path.join(accountHome, ".codex");
@@ -117,7 +118,7 @@ function prepareVoiceHome(homeDir, upstreamPort, localPort) {
       server: {
         host: "127.0.0.1",
         port: localPort,
-        body_limit_mb: 512
+        body_limit_mb: bodyLimitMb
       },
       upstream: {
         codex_base_url: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
@@ -314,4 +315,49 @@ test("cslot server 在 relay 模式下仍用官方账号完整转发 Voice call 
 
   client.close();
   await once(client, "close");
+});
+
+test("Voice HTTP 请求体超过配置上限时返回 413 且不会访问官方上游", async (t) => {
+  let upstreamRequestCount = 0;
+  const upstreamServer = http.createServer((_request, response) => {
+    upstreamRequestCount += 1;
+    response.statusCode = 200;
+    response.end("unexpected");
+  });
+  const upstreamPort = await listen(upstreamServer);
+  const localPort = await reservePort();
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "cslot-voice-limit-"));
+  prepareVoiceHome(homeDir, upstreamPort, localPort, 0.0001);
+
+  const child = spawn(process.execPath, [servePath, "--port", String(localPort)], {
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      USERPROFILE: homeDir
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  t.after(async () => {
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      await once(child, "exit");
+    }
+    await closeServer(upstreamServer);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  await waitForHealth(localPort);
+  const response = await fetch(`http://127.0.0.1:${localPort}/v1/live`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/octet-stream"
+    },
+    body: Buffer.alloc(1024, 1)
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal((await response.json()).error.type, "request_body_too_large");
+  assert.equal(upstreamRequestCount, 0);
+  await waitForHealth(localPort);
 });

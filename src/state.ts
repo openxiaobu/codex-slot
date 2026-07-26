@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getCslotHome } from "./config";
+import { withFileLockSync } from "./file-lock";
+import { ensurePrivateFile, writePrivateFileAtomic } from "./private-file";
 import type {
   AccountBlockState,
   CodexClientVersionCacheSource,
@@ -110,19 +112,43 @@ function normalizeModelRouteSelection(
 }
 
 /**
+ * 在不获取状态锁的前提下读取并归一化当前 state 文件。
+ *
+ * @param statePath state 文件绝对路径。
+ * @returns 当前 schema 的状态对象；文件不存在时返回默认状态。
+ * @throws 当文件读取或 JSON 解析失败时抛出异常。
+ */
+function loadStateUnlocked(statePath: string): CslotState {
+  if (!fs.existsSync(statePath)) {
+    return createDefaultState();
+  }
+
+  ensurePrivateFile(statePath);
+  const raw = fs.readFileSync(statePath, "utf8");
+  return normalizeState(raw.trim() ? (JSON.parse(raw) as Partial<CslotState>) : null);
+}
+
+/**
+ * 在调用方已经持有状态锁时原子保存 state 文件。
+ *
+ * @param statePath state 文件绝对路径。
+ * @param state 待归一化并持久化的状态对象。
+ * @returns 归一化后的当前 schema 状态。
+ * @throws 当序列化或原子写入失败时抛出异常。
+ */
+function saveStateUnlocked(statePath: string, state: CslotState): CslotState {
+  const normalizedState = normalizeState(state);
+  writePrivateFileAtomic(statePath, `${JSON.stringify(normalizedState, null, 2)}\n`);
+  return normalizedState;
+}
+
+/**
  * 读取 cslot 的本地运行状态；文件不存在时返回默认空状态。
  *
  * @returns 当前持久化状态。
  */
 export function loadState(): CslotState {
-  const statePath = getStatePath();
-
-  if (!fs.existsSync(statePath)) {
-    return createDefaultState();
-  }
-
-  const raw = fs.readFileSync(statePath, "utf8");
-  return normalizeState(raw.trim() ? (JSON.parse(raw) as Partial<CslotState>) : null);
+  return loadStateUnlocked(getStatePath());
 }
 
 /**
@@ -133,11 +159,11 @@ export function loadState(): CslotState {
  */
 export function saveState(state: CslotState): void {
   const statePath = getStatePath();
-  const normalizedState = normalizeState(state);
-  const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
+  const lockPath = path.join(getCslotHome(), "locks", "state.lock");
 
-  fs.writeFileSync(tempPath, `${JSON.stringify(normalizedState, null, 2)}\n`, "utf8");
-  fs.renameSync(tempPath, statePath);
+  withFileLockSync(lockPath, () => {
+    saveStateUnlocked(statePath, state);
+  });
 }
 
 /**
@@ -152,10 +178,14 @@ export function saveState(state: CslotState): void {
  * @throws 当读取、修改或写入失败时透传底层异常。
  */
 export function updateState(mutator: (state: CslotState) => void): CslotState {
-  const state = loadState();
-  mutator(state);
-  saveState(state);
-  return state;
+  const statePath = getStatePath();
+  const lockPath = path.join(getCslotHome(), "locks", "state.lock");
+
+  return withFileLockSync(lockPath, () => {
+    const latest = loadStateUnlocked(statePath);
+    mutator(latest);
+    return saveStateUnlocked(statePath, latest);
+  });
 }
 
 /**
@@ -194,31 +224,23 @@ export function clearAccountBlock(accountId: string): void {
  * @returns 清理后的状态对象。
  */
 export function pruneExpiredBlocks(): CslotState {
-  const state = loadState();
+  const statePath = getStatePath();
+  const lockPath = path.join(getCslotHome(), "locks", "state.lock");
   const now = Math.floor(Date.now() / 1000);
-  let changed = false;
 
-  for (const [accountId, block] of Object.entries(state.account_blocks)) {
-    if (block.until !== null && block.until <= now) {
-      delete state.account_blocks[accountId];
-      changed = true;
+  return withFileLockSync(lockPath, () => {
+    const state = loadStateUnlocked(statePath);
+    let changed = false;
+
+    for (const [accountId, block] of Object.entries(state.account_blocks)) {
+      if (block.until !== null && block.until <= now) {
+        delete state.account_blocks[accountId];
+        changed = true;
+      }
     }
-  }
 
-  if (changed) {
-    updateState((latest) => {
-      for (const accountId of Object.keys(state.account_blocks)) {
-        latest.account_blocks[accountId] = state.account_blocks[accountId];
-      }
-      for (const accountId of Object.keys(latest.account_blocks)) {
-        if (!(accountId in state.account_blocks)) {
-          delete latest.account_blocks[accountId];
-        }
-      }
-    });
-  }
-
-  return state;
+    return changed ? saveStateUnlocked(statePath, state) : state;
+  });
 }
 
 /**

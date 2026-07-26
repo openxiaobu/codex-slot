@@ -27,15 +27,27 @@ interface ProxyReply {
   hijack: () => void;
 }
 
+class RequestBodyTooLargeError extends Error {
+  constructor(maxBytes: number) {
+    super(`Request body exceeds configured limit of ${maxBytes} bytes`);
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
 /**
  * 读取代理请求的原始 body 字节，供多账号重试时重复发送同一份载荷。
  *
  * @param stream 客户端发到代理路由的原始可读流；无 body 时允许为空。
+ * @param maxBytes 允许读取的最大字节数；超过后立即拒绝且不再缓存后续内容。
  * @returns 完整请求体的 Buffer；空请求体时返回空 Buffer。
- * @throws 当读取流失败时抛出底层 I/O 错误。
+ * @throws 当请求体超过限制时抛出 `RequestBodyTooLargeError`，读取失败时透传 I/O 错误。
  */
-async function readRawRequestBody(stream?: NodeJS.ReadableStream): Promise<Buffer> {
+async function readRawRequestBody(
+  stream: NodeJS.ReadableStream | undefined,
+  maxBytes: number
+): Promise<Buffer> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
 
   if (!stream) {
     return Buffer.alloc(0);
@@ -43,10 +55,31 @@ async function readRawRequestBody(stream?: NodeJS.ReadableStream): Promise<Buffe
 
   for await (const chunk of stream) {
     // 统一转成 Buffer，避免不同 chunk 类型在后续重发时出现编码歧义。
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > maxBytes) {
+      throw new RequestBodyTooLargeError(maxBytes);
+    }
+    chunks.push(buffer);
   }
 
-  return Buffer.concat(chunks);
+  return Buffer.concat(chunks, totalBytes);
+}
+
+/**
+ * 将请求体超限统一转换为 OpenAI-compatible 的 HTTP 413 错误。
+ *
+ * @param reply 当前 Fastify 响应对象。
+ * @returns 无返回值。
+ * @throws 无显式抛出。
+ */
+function sendRequestBodyTooLarge(reply: ProxyReply): void {
+  reply.code(413).send({
+    error: {
+      message: "Request body exceeds configured cslot limit",
+      type: "request_body_too_large"
+    }
+  });
 }
 
 /**
@@ -118,9 +151,10 @@ export async function streamProxyResponse(
  */
 export async function startServer(port: number): Promise<void> {
   const config = loadConfig();
+  const bodyLimitBytes = Math.floor(config.server.body_limit_mb * 1024 * 1024);
   const app = Fastify({
     logger: false,
-    bodyLimit: Math.floor(config.server.body_limit_mb * 1024 * 1024)
+    bodyLimit: bodyLimitBytes
   });
   const voiceCallBindings = new VoiceCallBindingStore();
   const { proxyVoiceCall } = createVoiceProxyService(voiceCallBindings);
@@ -131,6 +165,23 @@ export async function startServer(port: number): Promise<void> {
 
   app.addHook("onClose", async () => {
     voiceWebSocketProxy.close();
+  });
+
+  app.setErrorHandler((error, _request, reply) => {
+    if (
+      error instanceof RequestBodyTooLargeError ||
+      (error as { code?: string }).code === "FST_ERR_CTP_BODY_TOO_LARGE"
+    ) {
+      reply.code(413).send({
+        error: {
+          message: "Request body exceeds configured cslot limit",
+          type: "request_body_too_large"
+        }
+      });
+      return;
+    }
+
+    reply.send(error);
   });
 
   app.get("/health", async () => {
@@ -158,7 +209,16 @@ export async function startServer(port: number): Promise<void> {
     },
     reply: ProxyReply
   ) => {
-    const requestBody = await readRawRequestBody(request.body);
+    let requestBody: Buffer;
+    try {
+      requestBody = await readRawRequestBody(request.body, bodyLimitBytes);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        sendRequestBodyTooLarge(reply);
+        return;
+      }
+      throw error;
+    }
     const result = await proxyModelWithRoute({
       method: request.method,
       url: request.url,
@@ -195,7 +255,16 @@ export async function startServer(port: number): Promise<void> {
     },
     reply: ProxyReply
   ) => {
-    const requestBody = await readRawRequestBody(request.body);
+    let requestBody: Buffer;
+    try {
+      requestBody = await readRawRequestBody(request.body, bodyLimitBytes);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        sendRequestBodyTooLarge(reply);
+        return;
+      }
+      throw error;
+    }
     const result = await proxyVoiceCall({
       method: request.method,
       url: request.url,
@@ -224,7 +293,18 @@ export async function startServer(port: number): Promise<void> {
     },
     reply: ProxyReply
   ) => {
-    const requestBody = request.body ? await readRawRequestBody(request.body) : undefined;
+    let requestBody: Buffer | undefined;
+    try {
+      requestBody = request.body
+        ? await readRawRequestBody(request.body, bodyLimitBytes)
+        : undefined;
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        sendRequestBodyTooLarge(reply);
+        return;
+      }
+      throw error;
+    }
     const result = await proxyChatGptBackendWithRetry({
       method: request.method,
       url: request.url,
@@ -259,7 +339,7 @@ export async function startServer(port: number): Promise<void> {
       proxyApp.route({
         method: "POST",
         url,
-        bodyLimit: Number.MAX_SAFE_INTEGER,
+        bodyLimit: bodyLimitBytes,
         handler: async (request, reply) => {
           const body = request.body as NodeJS.ReadableStream | undefined;
 
@@ -279,7 +359,7 @@ export async function startServer(port: number): Promise<void> {
     proxyApp.route({
       method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
       url: "/v1/*",
-      bodyLimit: Number.MAX_SAFE_INTEGER,
+      bodyLimit: bodyLimitBytes,
       handler: async (request, reply) => {
         const body = request.body as NodeJS.ReadableStream | undefined;
 
@@ -298,7 +378,7 @@ export async function startServer(port: number): Promise<void> {
     proxyApp.route({
       method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
       url: "/backend-api/codex/*",
-      bodyLimit: Number.MAX_SAFE_INTEGER,
+      bodyLimit: bodyLimitBytes,
       handler: async (request, reply) => {
         const body = request.body as NodeJS.ReadableStream | undefined;
 
@@ -317,7 +397,7 @@ export async function startServer(port: number): Promise<void> {
     proxyApp.route({
       method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
       url: "/backend-api/*",
-      bodyLimit: Number.MAX_SAFE_INTEGER,
+      bodyLimit: bodyLimitBytes,
       handler: async (request, reply) => {
         const body = request.body as NodeJS.ReadableStream | undefined;
 

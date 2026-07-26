@@ -1,11 +1,14 @@
 import { request } from "undici";
+import path from "node:path";
+import { createHash } from "node:crypto";
 import {
   findManagedAccount,
   readAuthFile,
   resolvePrimaryRegistryAccount,
   writeAuthFile
 } from "./account-store";
-import { loadConfig } from "./config";
+import { getCslotHome, loadConfig } from "./config";
+import { withFileLock } from "./file-lock";
 import { reconcileQuotaBlockAfterUsageRefresh } from "./quota-status";
 import {
   clearAccountBlock,
@@ -24,6 +27,7 @@ import type {
 
 const USAGE_CACHE_TTL_MS = 60 * 1000;
 const inflightUsageRefreshes = new Map<string, Promise<void>>();
+const inflightTokenRefreshes = new Map<string, Promise<CodexAuthFile>>();
 
 interface UsageWindow {
   used_percent?: number;
@@ -143,6 +147,31 @@ function classifyUsageRefreshError(accountId: string, error: unknown): UsageRefr
  * @throws 当账号不存在、缺少 refresh_token 或刷新失败时抛出错误。
  */
 export async function refreshAccountTokens(accountId: string): Promise<CodexAuthFile> {
+  const existing = inflightTokenRefreshes.get(accountId);
+  if (existing) {
+    return await existing;
+  }
+
+  const refreshTask = refreshAccountTokensExclusive(accountId);
+  inflightTokenRefreshes.set(accountId, refreshTask);
+
+  try {
+    return await refreshTask;
+  } finally {
+    if (inflightTokenRefreshes.get(accountId) === refreshTask) {
+      inflightTokenRefreshes.delete(accountId);
+    }
+  }
+}
+
+/**
+ * 在账号级跨进程锁内刷新 token，并复用等待期间由其他进程写入的新凭据。
+ *
+ * @param accountId 账号标识。
+ * @returns 最新认证信息；若等待锁期间其他进程已经刷新则直接返回磁盘新值。
+ * @throws 当账号不存在、缺少 refresh_token、锁等待或远端刷新失败时抛出错误。
+ */
+async function refreshAccountTokensExclusive(accountId: string): Promise<CodexAuthFile> {
   const config = loadConfig();
   const account = findManagedAccount(accountId);
 
@@ -150,54 +179,75 @@ export async function refreshAccountTokens(accountId: string): Promise<CodexAuth
     throw new Error(bi(`未找到账号 ${accountId}`, `Account not found: ${accountId}`));
   }
 
-  const auth = readAuthFile(account.codex_home);
-  const refreshToken = auth?.tokens?.refresh_token;
+  const initialAuth = readAuthFile(account.codex_home);
+  const initialLastRefresh = initialAuth?.last_refresh ?? null;
+  const lockName = createHash("sha256").update(accountId).digest("hex");
+  const lockPath = path.join(getCslotHome(), "locks", `token-${lockName}.lock`);
 
-  if (!refreshToken) {
-    throw new Error(bi(`账号 ${accountId} 缺少 refresh_token`, `Account ${accountId} is missing refresh_token`));
-  }
+  return await withFileLock(lockPath, async () => {
+    const latestAccount = findManagedAccount(accountId);
+    if (!latestAccount) {
+      throw new Error(bi(`未找到账号 ${accountId}`, `Account not found: ${accountId}`));
+    }
 
-  const response = await request(`${config.upstream.auth_base_url}/oauth/token`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-      accept: "application/json"
-    },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: config.upstream.oauth_client_id
-    }).toString()
+    const auth = readAuthFile(latestAccount.codex_home);
+    if (
+      auth?.last_refresh &&
+      auth.last_refresh !== initialLastRefresh &&
+      auth.tokens?.access_token
+    ) {
+      return auth;
+    }
+
+    const refreshToken = auth?.tokens?.refresh_token;
+    if (!refreshToken) {
+      throw new Error(bi(`账号 ${accountId} 缺少 refresh_token`, `Account ${accountId} is missing refresh_token`));
+    }
+
+    const response = await request(`${config.upstream.auth_base_url}/oauth/token`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json"
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: config.upstream.oauth_client_id
+      }).toString()
+    });
+
+    if (response.statusCode >= 400) {
+      await response.body.text();
+      throw new Error(bi(`刷新 token 失败: HTTP ${response.statusCode}`, `Failed to refresh token: HTTP ${response.statusCode}`));
+    }
+
+    const payload = (await response.body.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      id_token?: string;
+    };
+
+    const nextAuth: CodexAuthFile = {
+      ...(auth ?? {}),
+      auth_mode: "chatgpt",
+      OPENAI_API_KEY: null,
+      tokens: {
+        ...(auth?.tokens ?? {}),
+        access_token: payload.access_token ?? auth?.tokens?.access_token,
+        refresh_token: payload.refresh_token ?? auth?.tokens?.refresh_token,
+        id_token: payload.id_token ?? auth?.tokens?.id_token,
+        account_id: auth?.tokens?.account_id
+      },
+      last_refresh: new Date().toISOString()
+    };
+
+    writeAuthFile(latestAccount.codex_home, nextAuth);
+    clearShortLivedAccountBlock(accountId);
+    return nextAuth;
+  }, {
+    timeoutMs: 30_000
   });
-
-  if (response.statusCode >= 400) {
-    const errorText = await response.body.text();
-    throw new Error(bi(`刷新 token 失败: HTTP ${response.statusCode} ${errorText}`, `Failed to refresh token: HTTP ${response.statusCode} ${errorText}`));
-  }
-
-  const payload = (await response.body.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-    id_token?: string;
-  };
-
-  const nextAuth: CodexAuthFile = {
-    ...(auth ?? {}),
-    auth_mode: "chatgpt",
-    OPENAI_API_KEY: null,
-    tokens: {
-      ...(auth?.tokens ?? {}),
-      access_token: payload.access_token ?? auth?.tokens?.access_token,
-      refresh_token: payload.refresh_token ?? auth?.tokens?.refresh_token,
-      id_token: payload.id_token ?? auth?.tokens?.id_token,
-      account_id: auth?.tokens?.account_id
-    },
-    last_refresh: new Date().toISOString()
-  };
-
-  writeAuthFile(account.codex_home, nextAuth);
-  clearShortLivedAccountBlock(accountId);
-  return nextAuth;
 }
 
 /**
@@ -214,35 +264,47 @@ export async function refreshAccountUsage(accountId: string): Promise<UsageRefre
     throw new Error(bi(`未找到账号 ${accountId}`, `Account not found: ${accountId}`));
   }
 
-  const auth = readAuthFile(account.codex_home);
-  const accessToken = auth?.tokens?.access_token;
-  const accountIdHeader = auth?.tokens?.account_id;
-
-  if (!accessToken) {
-    throw new Error(bi(`账号 ${accountId} 缺少 access_token`, `Account ${accountId} is missing access_token`));
-  }
-
-  const response = await request("https://chatgpt.com/backend-api/wham/usage", {
-    method: "GET",
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      accept: "application/json",
-      "user-agent": "codex-slot/0.1.1",
-      ...(accountIdHeader ? { "chatgpt-account-id": accountIdHeader } : {})
+  let payload: WhamUsageResponse | null = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const auth = readAuthFile(account.codex_home);
+    const accessToken = auth?.tokens?.access_token;
+    const accountIdHeader = auth?.tokens?.account_id;
+    if (!accessToken) {
+      throw new Error(bi(`账号 ${accountId} 缺少 access_token`, `Account ${accountId} is missing access_token`));
     }
-  });
 
-  if (response.statusCode === 401) {
-    await refreshAccountTokens(accountId);
-    return await refreshAccountUsage(accountId);
+    const response = await request("https://chatgpt.com/backend-api/wham/usage", {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        accept: "application/json",
+        "user-agent": "codex-slot/0.1.1",
+        ...(accountIdHeader ? { "chatgpt-account-id": accountIdHeader } : {})
+      }
+    });
+
+    if (response.statusCode === 401) {
+      await response.body.text();
+      if (attempt === 0) {
+        await refreshAccountTokens(accountId);
+        continue;
+      }
+      throw new Error(bi("刷新额度失败: token 刷新后仍返回 HTTP 401", "Failed to refresh usage: HTTP 401 after token refresh"));
+    }
+
+    if (response.statusCode >= 400) {
+      const errorText = (await response.body.text()).slice(0, 1000);
+      throw new Error(bi(`刷新额度失败: HTTP ${response.statusCode} ${errorText}`, `Failed to refresh usage: HTTP ${response.statusCode} ${errorText}`));
+    }
+
+    payload = (await response.body.json()) as WhamUsageResponse;
+    break;
   }
 
-  if (response.statusCode >= 400) {
-    const errorText = await response.body.text();
-    throw new Error(bi(`刷新额度失败: HTTP ${response.statusCode} ${errorText}`, `Failed to refresh usage: HTTP ${response.statusCode} ${errorText}`));
+  if (!payload) {
+    throw new Error(bi("刷新额度失败: 未返回有效响应", "Failed to refresh usage: no valid response"));
   }
 
-  const payload = (await response.body.json()) as WhamUsageResponse;
   const primary = resolvePrimaryRegistryAccount(account.codex_home);
   const email = primary?.email ?? account.email ?? undefined;
   const plan = payload.plan_type ?? primary?.plan ?? "-";

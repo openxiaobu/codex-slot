@@ -2,8 +2,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
 const test = require("node:test");
 
+const execFileAsync = promisify(execFile);
 const {
   getCachedCodexClientVersion,
   getServiceRunMode,
@@ -59,6 +62,9 @@ test("state 读取旧格式时自动补齐当前 schema 字段", () => {
     assert.equal(state.managed_codex_config, null);
     assert.equal(state.codex_client_version_cache, null);
     assert.equal(state.service_run_mode, null);
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(statePath).mode & 0o777, 0o600);
+    }
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
@@ -102,6 +108,10 @@ test("state 保存时写入版本并通过临时文件原子替换", () => {
     assert.equal(saved.codex_client_version_cache.version, "0.150.0");
     assert.equal(saved.service_run_mode, null);
     assert.deepEqual(tempFiles, []);
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(cslotDir).mode & 0o777, 0o700);
+      assert.equal(fs.statSync(statePath).mode & 0o777, 0o600);
+    }
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
@@ -137,6 +147,46 @@ test("state 可持久化 proxy-only 服务运行模式", () => {
       setServiceRunMode(null);
       assert.equal(getServiceRunMode(), null);
     });
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("state 跨进程并发更新不会丢失其他进程写入的字段", async () => {
+  const homeDir = createIsolatedHome();
+  const stateModulePath = path.join(__dirname, "..", "dist", "state.js");
+  const workerCode = `
+    const { updateState } = require(${JSON.stringify(stateModulePath)});
+    const workerId = process.argv[1];
+    for (let index = 0; index < 20; index += 1) {
+      updateState((state) => {
+        state.account_blocks[workerId + "-" + index] = {
+          until: null,
+          reason: "concurrency-test",
+          updated_at: "2026-07-26T00:00:00.000Z"
+        };
+      });
+    }
+  `;
+
+  try {
+    await Promise.all(
+      ["a", "b", "c", "d"].map((workerId) =>
+        execFileAsync(process.execPath, ["-e", workerCode, workerId], {
+          env: {
+            ...process.env,
+            HOME: homeDir,
+            USERPROFILE: homeDir
+          }
+        })
+      )
+    );
+
+    const state = withHome(homeDir, () => loadState());
+    assert.equal(Object.keys(state.account_blocks).length, 80);
+    for (const workerId of ["a", "b", "c", "d"]) {
+      assert.equal(state.account_blocks[`${workerId}-19`].reason, "concurrency-test");
+    }
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
