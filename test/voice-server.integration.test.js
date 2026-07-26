@@ -254,7 +254,13 @@ test("cslot server 在 relay 模式下仍用官方账号完整转发 Voice call 
     method: "POST",
     headers: {
       "content-type": multipart.contentType,
-      "user-agent": "codex-cli/0.146.0"
+      "user-agent": "codex-cli/0.146.0",
+      "openai-alpha": "quicksilver=v1",
+      "originator": "codex_work_desktop",
+      "session-id": "call-codex-session",
+      "thread-id": "call-thread",
+      "x-oai-attestation": "call-attestation",
+      "x-session-id": "call-session"
     },
     body: multipart.body
   });
@@ -292,7 +298,15 @@ test("cslot server 在 relay 模式下仍用官方账号完整转发 Voice call 
 
   const client = new WebSocket(
     `ws://127.0.0.1:${localPort}/v1/live/rtc_server_integration`,
-    { perMessageDeflate: false }
+    {
+      headers: {
+        "session-id": "different-codex-session",
+        "thread-id": "different-thread",
+        "x-oai-attestation": "different-sideband-attestation",
+        "x-session-id": "different-sideband-session"
+      },
+      perMessageDeflate: false
+    }
   );
   const messagePromise = once(client, "message");
 
@@ -311,6 +325,30 @@ test("cslot server 在 relay 模式下仍用官方账号完整转发 Voice call 
   assert.equal(
     upstreamWebSocketRequest.headers.authorization,
     "Bearer server-integration-token"
+  );
+  assert.equal(
+    upstreamWebSocketRequest.headers["openai-alpha"],
+    "quicksilver=v1"
+  );
+  assert.equal(
+    upstreamWebSocketRequest.headers.originator,
+    "codex_work_desktop"
+  );
+  assert.equal(
+    upstreamWebSocketRequest.headers["session-id"],
+    "call-codex-session"
+  );
+  assert.equal(
+    upstreamWebSocketRequest.headers["thread-id"],
+    "call-thread"
+  );
+  assert.equal(
+    upstreamWebSocketRequest.headers["x-oai-attestation"],
+    "call-attestation"
+  );
+  assert.equal(
+    upstreamWebSocketRequest.headers["x-session-id"],
+    "call-session"
   );
 
   client.close();

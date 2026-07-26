@@ -166,7 +166,10 @@ test("Voice /v1/live 把公共 multipart 转成 backend JSON 并记录账号绑�
     callId: "rtc_voice_test",
     accountId: "voice-a",
     codexHome: "/tmp/voice-a",
-    createdAt: 123456789
+    createdAt: 123456789,
+    sidebandHeaders: {
+      "user-agent": "codex-cli/0.146.0"
+    }
   });
 });
 

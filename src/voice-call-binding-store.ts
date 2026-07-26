@@ -3,6 +3,7 @@ export interface VoiceCallBinding {
   accountId: string;
   codexHome: string;
   createdAt: number;
+  sidebandHeaders?: Record<string, string>;
 }
 
 const DEFAULT_BINDING_TTL_MS = 15 * 60 * 1000;

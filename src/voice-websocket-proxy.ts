@@ -223,6 +223,7 @@ function buildUpstreamVoiceWebSocketUrl(
  * 构造上游 Voice WebSocket 握手头。
  *
  * @param requestHeaders Codex App 发给本地 sideband 的原始握手头。
+ * @param callHeaders 创建当前 call 时固定的会话安全头。
  * @param accessToken call 绑定账号的当前 access token。
  * @param accountIdHeader 可选 ChatGPT account id。
  * @returns 可交给 `ws` 客户端的安全握手头。
@@ -230,6 +231,7 @@ function buildUpstreamVoiceWebSocketUrl(
  */
 function buildVoiceWebSocketHeaders(
   requestHeaders: IncomingHttpHeaders,
+  callHeaders: Record<string, string> | undefined,
   accessToken: string,
   accountIdHeader?: string
 ): Record<string, string> {
@@ -256,6 +258,10 @@ function buildVoiceWebSocketHeaders(
     }
 
     headers[normalizedName] = Array.isArray(value) ? value.join(", ") : value;
+  }
+
+  for (const [name, value] of Object.entries(callHeaders ?? {})) {
+    headers[name.toLowerCase()] = value;
   }
 
   headers.authorization = `Bearer ${accessToken}`;
@@ -411,6 +417,7 @@ async function connectBoundVoiceWebSocket(
       upstreamUrl,
       buildVoiceWebSocketHeaders(
         requestHeaders,
+        binding.sidebandHeaders,
         accessToken,
         auth?.tokens?.account_id
       ),
@@ -439,6 +446,7 @@ async function connectBoundVoiceWebSocket(
     upstreamUrl,
     buildVoiceWebSocketHeaders(
       requestHeaders,
+      binding.sidebandHeaders,
       accessToken,
       auth?.tokens?.account_id
     ),

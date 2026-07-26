@@ -54,6 +54,17 @@ interface MultipartVoicePayload {
   session: Record<string, unknown>;
 }
 
+const VOICE_SIDEBAND_SESSION_HEADERS = new Set([
+  "openai-alpha",
+  "originator",
+  "session-id",
+  "thread-id",
+  "user-agent",
+  "x-codex-installation-id",
+  "x-oai-attestation",
+  "x-session-id"
+]);
+
 export type VoiceProxyResult =
   | {
       type: "proxy";
@@ -118,6 +129,34 @@ function replaceRequestHeader(
 
   replaced[normalizedTarget] = value;
   return replaced;
+}
+
+/**
+ * 固定创建 Voice call 时使用的 sideband 会话头。
+ *
+ * 业务含义：
+ * 1. 官方 Voice HTTP call 与后续 sideband WebSocket 必须复用同一组 attestation 和 session 身份。
+ * 2. 这里只保存进程内短期握手所需字段，不保存 Authorization、账号头或其他客户端请求内容。
+ *
+ * @param headers 创建 Voice call 时由 Codex App 发送的请求头。
+ * @returns 可在同一 call 的 sideband 握手中重放的会话头；缺失字段不会被补造。
+ * @throws 无显式抛出。
+ */
+function captureVoiceSidebandHeaders(
+  headers: IncomingHttpHeaders
+): Record<string, string> {
+  const captured: Record<string, string> = {};
+
+  for (const [name, value] of Object.entries(headers)) {
+    const normalizedName = name.toLowerCase();
+    if (value == null || !VOICE_SIDEBAND_SESSION_HEADERS.has(normalizedName)) {
+      continue;
+    }
+
+    captured[normalizedName] = Array.isArray(value) ? value.join(", ") : value;
+  }
+
+  return captured;
 }
 
 /**
@@ -621,7 +660,8 @@ export function createVoiceProxyService(
         callId,
         accountId: account.id,
         codexHome: account.codex_home,
-        createdAt: dependencies.now()
+        createdAt: dependencies.now(),
+        sidebandHeaders: captureVoiceSidebandHeaders(resolvedRequest.headers)
       });
 
       return {
