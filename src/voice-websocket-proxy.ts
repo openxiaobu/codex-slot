@@ -36,6 +36,10 @@ interface BufferedUpstreamSocket {
   stopBuffering: () => void;
 }
 
+const CHATGPT_CODEX_UPSTREAM_ORIGIN = "https://chatgpt.com";
+const CHATGPT_CODEX_UPSTREAM_PATH = "/backend-api/codex";
+const OPENAI_REALTIME_SIDEBAND_BASE_URL = "https://api.openai.com/v1";
+
 export interface VoiceWebSocketProxy {
   /**
    * 停止接收新的 Voice upgrade，并终止当前代理持有的 WebSocket。
@@ -175,18 +179,30 @@ function resolveVoiceWebSocketRoute(
 }
 
 /**
- * 将 ChatGPT Codex HTTP base URL 转换成绑定 call id 的上游 sideband URL。
+ * 将 Voice HTTP call base URL 转换成绑定 call id 的上游 sideband URL。
+ *
+ * 业务含义：
+ * 1. ChatGPT 登录态通过 `/backend-api/codex/realtime/calls` 创建 WebRTC call。
+ * 2. 官方 Codex 随后使用 `api.openai.com/v1` 的 WebSocket transceiver 加入同一个 call，
+ *    不能把 sideband 继续连接到 ChatGPT backend，否则上游会拒绝握手。
+ * 3. 自定义或测试 upstream 保留原有同源拼接行为。
  *
  * @param codexBaseUrl 配置中的 ChatGPT Codex backend base URL。
  * @param route 本地 Voice WebSocket 路由。
  * @returns `ws:` 或 `wss:` 上游 URL。
  * @throws 当 base URL 非法或协议不受支持时抛出错误。
  */
-function buildUpstreamVoiceWebSocketUrl(
+export function buildUpstreamVoiceWebSocketUrl(
   codexBaseUrl: string,
   route: VoiceWebSocketRoute
 ): string {
-  const url = new URL(codexBaseUrl);
+  const configuredUrl = new URL(codexBaseUrl);
+  const usesChatGptCallBackend =
+    configuredUrl.origin === CHATGPT_CODEX_UPSTREAM_ORIGIN &&
+    configuredUrl.pathname.replace(/\/+$/, "") === CHATGPT_CODEX_UPSTREAM_PATH;
+  const url = usesChatGptCallBackend
+    ? new URL(OPENAI_REALTIME_SIDEBAND_BASE_URL)
+    : configuredUrl;
 
   if (url.protocol === "https:") {
     url.protocol = "wss:";
@@ -197,13 +213,19 @@ function buildUpstreamVoiceWebSocketUrl(
   }
 
   if (route.mode === "frameless") {
-    url.pathname = `${url.pathname.replace(/\/+$/, "")}/${encodeURIComponent(route.callId)}`;
+    const basePath = url.pathname.replace(/\/+$/, "");
+    url.pathname = usesChatGptCallBackend
+      ? `${basePath}/live/${encodeURIComponent(route.callId)}`
+      : `${basePath}/${encodeURIComponent(route.callId)}`;
     for (const [name, value] of route.query) {
       if (name !== "call_id") {
         url.searchParams.append(name, value);
       }
     }
   } else {
+    if (usesChatGptCallBackend) {
+      url.pathname = `${url.pathname.replace(/\/+$/, "")}/realtime`;
+    }
     for (const [name, value] of route.query) {
       if (name !== "call_id" && name !== "intent") {
         url.searchParams.append(name, value);
@@ -730,6 +752,12 @@ export function createVoiceWebSocketProxy(
         protocols
       );
     } catch (error) {
+      const upstreamStatus = error instanceof VoiceWebSocketConnectError
+        ? error.statusCode ?? "transport"
+        : "unexpected";
+      console.error(
+        `cslot voice sideband connection failed: mode=${route.mode} status=${upstreamStatus}`
+      );
       writeUpgradeError(
         socket,
         502,

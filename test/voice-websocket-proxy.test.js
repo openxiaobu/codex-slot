@@ -6,7 +6,10 @@ const WebSocket = require("ws");
 const { WebSocketServer } = WebSocket;
 
 const { VoiceCallBindingStore } = require("../dist/voice-call-binding-store.js");
-const { createVoiceWebSocketProxy } = require("../dist/voice-websocket-proxy.js");
+const {
+  buildUpstreamVoiceWebSocketUrl,
+  createVoiceWebSocketProxy
+} = require("../dist/voice-websocket-proxy.js");
 
 async function listen(server) {
   server.listen(0, "127.0.0.1");
@@ -77,6 +80,31 @@ function createConfig(upstreamPort) {
     relay_slots: []
   };
 }
+
+test("Voice ChatGPT call 的 sideband 使用 OpenAI transceiver 独立上游", () => {
+  assert.equal(
+    buildUpstreamVoiceWebSocketUrl(
+      "https://chatgpt.com/backend-api/codex",
+      {
+        callId: "rtc_voice_direct",
+        mode: "frameless",
+        query: new URLSearchParams()
+      }
+    ),
+    "wss://api.openai.com/v1/live/rtc_voice_direct"
+  );
+  assert.equal(
+    buildUpstreamVoiceWebSocketUrl(
+      "https://chatgpt.com/backend-api/codex/",
+      {
+        callId: "rtc_voice_legacy_direct",
+        mode: "legacy",
+        query: new URLSearchParams("intent=quicksilver&trace=1")
+      }
+    ),
+    "wss://api.openai.com/v1/realtime?trace=1&intent=quicksilver&call_id=rtc_voice_legacy_direct"
+  );
+});
 
 test("Voice Frameless sideband 固定使用 call 创建账号并双向转发消息", async (t) => {
   const upstreamServer = http.createServer();
